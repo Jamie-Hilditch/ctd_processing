@@ -26,3 +26,6 @@ Thumbs.db
 
 # VS Code files
 .vscode/
+
+# Example CTD data files (dev/test only, not tracked in git)
+tests/example_data/
