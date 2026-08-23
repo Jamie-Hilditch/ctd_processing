@@ -1,0 +1,11 @@
+# ctd_processing configuration file
+#
+# Written by `ctd-processing init`. Pass this file to the `process`,
+# `bin`, and `concatenate` commands via `--config path/to/config.toml`.
+# Individual options can also be overridden on the command line with
+# `--set section.key=value` (repeatable), without editing this file.
+#
+# No configuration options are defined yet: ctd_processing is still in
+# early scaffolding, and `process`/`bin`/`concatenate` are stubs. As
+# real options are added to `ctd_processing.config.Settings`, they will
+# be documented here with their default values and units.
