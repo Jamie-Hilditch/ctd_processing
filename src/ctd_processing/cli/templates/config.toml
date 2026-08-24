@@ -40,5 +40,14 @@
 # the same way as rsk_directory.
 # binned_directory = "binned"
 
+# log_file (optional, default: unset): file to write log records below
+# ERROR level to. If relative, resolved the same way as rsk_directory.
+# Unset means no such file is written.
+# log_file = "ctd_processing.log"
+
+# error_log_file (optional, default: unset): file to write log records
+# at ERROR level and above to. Resolved the same way as log_file.
+# error_log_file = "ctd_processing.error.log"
+
 # [process] is reserved for process-specific options; none are defined
 # yet.

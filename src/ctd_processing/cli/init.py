@@ -53,6 +53,26 @@ def init_command(
             "created relative to --working-dir.",
         ),
     ] = Path("binned"),
+    log_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--log-file",
+            help="File to write log records below ERROR level to, "
+            "stored as paths.log_file. If omitted, no such file is "
+            "configured. If relative, its parent directory is created "
+            "relative to --working-dir.",
+        ),
+    ] = None,
+    error_log_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--error-log-file",
+            help="File to write log records at ERROR level and above "
+            "to, stored as paths.error_log_file. If omitted, no such "
+            "file is configured. If relative, its parent directory is "
+            "created relative to --working-dir.",
+        ),
+    ] = None,
     working_dir: Annotated[
         Path | None,
         typer.Option(
@@ -89,11 +109,12 @@ def init_command(
     Builds ``config.toml`` from a template (the package's bundled
     default, or a caller-supplied file via `template`), with `name`
     written into its ``[project]`` table and `rsk_directory`,
-    `profiles_directory`, and `binned_directory` written into its
-    ``[paths]`` table, `set_` overrides applied on top, and the three
-    directories created on disk. Since these options are always
-    applied, the output is always re-serialized and does not preserve
-    comments from the template.
+    `profiles_directory`, `binned_directory`, and (if given) `log_file`/
+    `error_log_file` written into its ``[paths]`` table, `set_`
+    overrides applied on top, and the corresponding directories created
+    on disk. Since these options are always applied, the output is
+    always re-serialized and does not preserve comments from the
+    template.
 
     Parameters
     ----------
@@ -115,6 +136,15 @@ def init_command(
         Directory for binned profile files, written as
         ``paths.binned_directory``. Resolved and created the same way
         as `rsk_directory`.
+    log_file : pathlib.Path or None, optional
+        File to write log records below ``ERROR`` level to, written as
+        ``paths.log_file``. If omitted, no such file is configured. If
+        given, its parent directory is resolved against `working_dir`
+        and created the same way as `rsk_directory`.
+    error_log_file : pathlib.Path or None, optional
+        File to write log records at ``ERROR`` level and above to,
+        written as ``paths.error_log_file``. If omitted, no such file
+        is configured. Resolved and created the same way as `log_file`.
     working_dir : pathlib.Path or None, optional
         Directory in which to write ``config.toml``, and against which
         relative `rsk_directory`, `profiles_directory`, and
@@ -166,6 +196,14 @@ def init_command(
         f"paths.profiles_directory={json.dumps(profiles_directory.as_posix())}",
         f"paths.binned_directory={json.dumps(binned_directory.as_posix())}",
     ]
+    if log_file is not None:
+        project_overrides.append(
+            f"paths.log_file={json.dumps(log_file.as_posix())}"
+        )
+    if error_log_file is not None:
+        project_overrides.append(
+            f"paths.error_log_file={json.dumps(error_log_file.as_posix())}"
+        )
 
     try:
         merged = merge_overrides(
@@ -182,6 +220,14 @@ def init_command(
         "profiles_directory": resolved_working_dir / paths.profiles_directory,
         "binned_directory": resolved_working_dir / paths.binned_directory,
     }
+    if paths.log_file is not None:
+        created_directories["log_file"] = (
+            resolved_working_dir / paths.log_file
+        ).parent
+    if paths.error_log_file is not None:
+        created_directories["error_log_file"] = (
+            resolved_working_dir / paths.error_log_file
+        ).parent
     for directory in created_directories.values():
         directory.mkdir(parents=True, exist_ok=True)
 

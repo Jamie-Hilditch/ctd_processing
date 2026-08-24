@@ -49,3 +49,6 @@ convention = "numpy"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "requires_example_data: needs tests/example_data/ (real .rsk files, not checked into git)",
+]

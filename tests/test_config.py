@@ -233,6 +233,64 @@ def test_project_name_can_be_overridden(tmp_path) -> None:
     assert settings.project.name == "a custom name"
 
 
+def test_load_settings_log_files_default_to_none(tmp_path) -> None:
+    """log_file/error_log_file default to None when omitted."""
+    settings = load_settings(
+        set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
+        + _other_paths(tmp_path)
+    )
+    assert settings.paths.log_file is None
+    assert settings.paths.error_log_file is None
+
+
+def test_load_settings_resolves_relative_log_files_against_config_parent(
+    tmp_path,
+) -> None:
+    """Relative log_file/error_log_file resolve against the config parent."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_path = project_dir / "config.toml"
+    config_path.write_text(
+        "[paths]\n"
+        'rsk_directory = "rsk_files"\n'
+        'profiles_directory = "profiles_files"\n'
+        'binned_directory = "binned_files"\n'
+        'log_file = "logs/ctd.log"\n'
+        'error_log_file = "logs/ctd.error.log"\n',
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.paths.log_file == project_dir / "logs" / "ctd.log"
+    assert (
+        settings.paths.error_log_file == project_dir / "logs" / "ctd.error.log"
+    )
+
+
+def test_load_settings_keeps_absolute_log_files_from_file(tmp_path) -> None:
+    """Absolute log_file/error_log_file values are left untouched."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_path = project_dir / "config.toml"
+    log_file = tmp_path / "elsewhere" / "ctd.log"
+    error_log_file = tmp_path / "elsewhere" / "ctd.error.log"
+    config_path.write_text(
+        "[paths]\n"
+        'rsk_directory = "rsk_files"\n'
+        'profiles_directory = "profiles_files"\n'
+        'binned_directory = "binned_files"\n'
+        f'log_file = "{log_file.as_posix()}"\n'
+        f'error_log_file = "{error_log_file.as_posix()}"\n',
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.paths.log_file == log_file
+    assert settings.paths.error_log_file == error_log_file
+
+
 def test_load_settings_missing_file_raises(tmp_path) -> None:
     """A nonexistent config path should raise FileNotFoundError."""
     with pytest.raises(FileNotFoundError):

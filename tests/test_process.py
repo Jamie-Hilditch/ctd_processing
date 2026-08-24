@@ -4,27 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from ctd_processing.cli.process import (
-    process_deployment,
-    resolve_deployment_files,
-)
-from ctd_processing.config import ProcessSettings, ProjectSettings
+from ctd_processing.cli.process import resolve_deployment_files
 
 
 def _touch(path: Path) -> Path:
     path.write_text("", encoding="utf-8")
     return path
-
-
-def test_process_deployment_is_a_documented_noop(tmp_path: Path) -> None:
-    """process_deployment is currently a no-op that returns None."""
-    file = _touch(tmp_path / "deployment.rsk")
-
-    result = process_deployment(
-        file, tmp_path / "profiles", ProcessSettings(), ProjectSettings()
-    )
-
-    assert result is None
 
 
 def test_resolve_deployment_files_explicit_targets_happy_path(

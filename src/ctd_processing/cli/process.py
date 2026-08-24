@@ -7,33 +7,7 @@ import typer
 
 from ctd_processing.cli._common import resolve_settings
 from ctd_processing.cli._options import SetOption
-from ctd_processing.config import ProcessSettings, ProjectSettings
-
-
-def process_deployment(
-    file: Path,
-    profiles_directory: Path,
-    settings: ProcessSettings,
-    project: ProjectSettings,
-) -> None:
-    """Process one ``.rsk`` deployment into extracted profile files.
-
-    Not yet implemented; currently a no-op. This defines the interface
-    ahead of the real pyrsktools/gsw-based implementation. `project`
-    metadata (e.g. `name`) is intended to be attached to every output
-    file's metadata once implemented.
-
-    Parameters
-    ----------
-    file : pathlib.Path
-        The ``.rsk`` deployment file to process.
-    profiles_directory : pathlib.Path
-        Directory to write extracted profile files into.
-    settings : ProcessSettings
-        Process-specific settings (currently none defined).
-    project : ProjectSettings
-        Project metadata to attach to every output file.
-    """
+from ctd_processing.process import process_deployment_files
 
 
 def resolve_deployment_files(
@@ -128,10 +102,12 @@ def process_command(
 
     Not yet implemented. This is a scaffolding stub: it validates its
     arguments, loads configuration, resolves which deployment files
-    would be processed, calls :func:`process_deployment` for each one
-    (currently a no-op), and reports that no processing has occurred,
-    so that the command is registered, documented, and testable ahead
-    of the real pyrsktools/gsw-based implementation.
+    would be processed, dispatches them to
+    :func:`ctd_processing.process.process_deployment_files` (which
+    currently only reads each deployment; profile extraction is not
+    yet implemented), and reports that no processing has occurred, so
+    that the command is registered, documented, and testable ahead of
+    the real pyrsktools/gsw-based implementation.
 
     Parameters
     ----------
@@ -165,13 +141,12 @@ def process_command(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
-    for deployment_file in deployment_files:
-        process_deployment(
-            deployment_file,
-            settings.paths.profiles_directory,
-            settings.process,
-            settings.project,
-        )
+    process_deployment_files(
+        deployment_files,
+        settings.paths.profiles_directory,
+        settings.process,
+        settings.project,
+    )
 
     listing = "\n".join(f"  {path}" for path in deployment_files)
     typer.echo(

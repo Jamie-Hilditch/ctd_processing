@@ -52,6 +52,14 @@ class PathsSettings(BaseModel):
         Directory for pressure/depth-binned profile files produced from
         `profiles_directory`. Required; there is no default. Resolved
         the same way as `rsk_directory`.
+    log_file : pathlib.Path or None
+        File to write log records below ``ERROR`` level to. Optional;
+        defaults to ``None``, meaning no such file is written. Resolved
+        the same way as `rsk_directory` when given.
+    error_log_file : pathlib.Path or None
+        File to write log records at ``ERROR`` level and above to.
+        Optional; defaults to ``None``, meaning no such file is
+        written. Resolved the same way as `rsk_directory` when given.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -59,6 +67,8 @@ class PathsSettings(BaseModel):
     rsk_directory: Path
     profiles_directory: Path
     binned_directory: Path
+    log_file: Path | None = None
+    error_log_file: Path | None = None
 
 
 class ProcessSettings(BaseModel):
@@ -259,8 +269,9 @@ def load_settings(
     -------
     Settings
         The loaded and validated settings. Relative
-        ``paths.rsk_directory``, ``paths.profiles_directory``, and
-        ``paths.binned_directory`` values are resolved against the
+        ``paths.rsk_directory``, ``paths.profiles_directory``,
+        ``paths.binned_directory``, and (when given) ``paths.log_file``
+        and ``paths.error_log_file`` values are resolved against the
         directory containing `config_path` (or the current working
         directory if `config_path` is ``None``), so a project's config
         resolves correctly regardless of where it is loaded from.
@@ -293,5 +304,9 @@ def load_settings(
         base_dir / settings.paths.profiles_directory
     )
     settings.paths.binned_directory = base_dir / settings.paths.binned_directory
+    if settings.paths.log_file is not None:
+        settings.paths.log_file = base_dir / settings.paths.log_file
+    if settings.paths.error_log_file is not None:
+        settings.paths.error_log_file = base_dir / settings.paths.error_log_file
 
     return settings

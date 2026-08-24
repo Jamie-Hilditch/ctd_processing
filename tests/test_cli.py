@@ -86,6 +86,32 @@ def test_init_project_directory_options_are_overridable(
     assert (tmp_path / "data" / "binned").is_dir()
 
 
+def test_init_log_file_options_are_written_and_directories_created(
+    tmp_path: Path,
+) -> None:
+    """--log-file/--error-log-file are written and their parents created."""
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--working-dir",
+            str(tmp_path),
+            "--log-file",
+            "logs/ctd.log",
+            "--error-log-file",
+            "logs/ctd.error.log",
+        ],
+    )
+
+    assert result.exit_code == 0
+    config = tomllib.loads(
+        (tmp_path / "config.toml").read_text(encoding="utf-8")
+    )
+    assert config["paths"]["log_file"] == "logs/ctd.log"
+    assert config["paths"]["error_log_file"] == "logs/ctd.error.log"
+    assert (tmp_path / "logs").is_dir()
+
+
 def test_init_defaults_working_dir_to_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -302,9 +328,12 @@ def test_stub_command_set_unknown_key_errors(
 
 
 def test_process_explicit_targets_reports_resolved_files(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Process --target should resolve only the named .rsk files."""
+    monkeypatch.setattr(
+        "ctd_processing.cli.process.process_deployment_files", lambda *a: None
+    )
     rsk_dir = tmp_path / "rsk"
     rsk_dir.mkdir()
     (rsk_dir / "a.rsk").write_text("", encoding="utf-8")
@@ -330,9 +359,12 @@ def test_process_explicit_targets_reports_resolved_files(
 
 
 def test_process_auto_discovers_targets_when_omitted(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Process with no --target auto-discovers top-level .rsk files."""
+    monkeypatch.setattr(
+        "ctd_processing.cli.process.process_deployment_files", lambda *a: None
+    )
     rsk_dir = tmp_path / "rsk"
     rsk_dir.mkdir()
     (rsk_dir / "b.rsk").write_text("", encoding="utf-8")
