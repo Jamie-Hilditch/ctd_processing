@@ -4,6 +4,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -11,18 +12,95 @@ from pydantic_settings import (
 )
 
 
+class ProjectSettings(BaseModel):
+    """Project-level metadata attached to every output file.
+
+    Attributes
+    ----------
+    name : str
+        Human-readable name for this project. Intended to be attached
+        to every output file's metadata (e.g. as a CF global attribute).
+        Defaults to ``"my_ctd_processing_project"``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = "my_ctd_processing_project"
+
+
+class PathsSettings(BaseModel):
+    """Directory locations for a ctd_processing project's pipeline stages.
+
+    Attributes
+    ----------
+    rsk_directory : pathlib.Path
+        Directory containing the raw ``.rsk`` deployment files to
+        process. Required; there is no default. May be given as a
+        relative or absolute path; :func:`load_settings` resolves a
+        relative path against the directory containing the loaded
+        config file (or the current working directory if none was
+        given). ``process`` resolves ``--target`` filenames relative to
+        this directory, or auto-discovers every top-level ``*.rsk``
+        file inside it when no target is given. Existence of the
+        directory is validated by the CLI at call time, not by this
+        model.
+    profiles_directory : pathlib.Path
+        Directory for extracted profile files produced from
+        `rsk_directory` deployments. Required; there is no default.
+        Resolved the same way as `rsk_directory`.
+    binned_directory : pathlib.Path
+        Directory for pressure/depth-binned profile files produced from
+        `profiles_directory`. Required; there is no default. Resolved
+        the same way as `rsk_directory`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rsk_directory: Path
+    profiles_directory: Path
+    binned_directory: Path
+
+
+class ProcessSettings(BaseModel):
+    """Settings specific to the ``process`` command.
+
+    Currently defines no fields. Extension point for process-specific
+    options (e.g. TEOS-10 conversion parameters) once
+    `ctd_processing.cli.process.process_deployment` needs them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class Settings(BaseSettings):
     """Runtime configuration for ctd_processing.
 
-    This model currently defines no fields. It is the single extension
-    point for every configuration option that ``process``, ``bin``, and
-    ``concatenate`` will need once real RSK-processing logic is
-    implemented. Per repository convention, every field added here must
-    have a corresponding, documented entry in the bundled starter
-    template at ``ctd_processing/cli/templates/config.toml``.
+    This model is the single extension point for every configuration
+    option that ``process``, ``bin``, and ``concatenate`` need. Per
+    repository convention, every field added here must have a
+    corresponding, documented entry in the bundled starter template at
+    ``ctd_processing/cli/templates/config.toml``.
+
+    Attributes
+    ----------
+    project : ProjectSettings
+        Project-level metadata attached to every output file, e.g.
+        `name`. Optional; every field of `ProjectSettings` has a
+        default.
+    paths : PathsSettings
+        Directory locations for the project's pipeline stages, e.g.
+        `rsk_directory`. Required, since none of its fields have a
+        default.
+    process : ProcessSettings
+        Settings specific to the ``process`` command. Optional;
+        currently has no fields.
     """
 
     model_config = SettingsConfigDict(extra="forbid")
+
+    project: ProjectSettings = Field(default_factory=ProjectSettings)
+    paths: PathsSettings
+    process: ProcessSettings = Field(default_factory=ProcessSettings)
 
     @classmethod
     def settings_customise_sources(
@@ -180,7 +258,12 @@ def load_settings(
     Returns
     -------
     Settings
-        The loaded and validated settings.
+        The loaded and validated settings. Relative
+        ``paths.rsk_directory``, ``paths.profiles_directory``, and
+        ``paths.binned_directory`` values are resolved against the
+        directory containing `config_path` (or the current working
+        directory if `config_path` is ``None``), so a project's config
+        resolves correctly regardless of where it is loaded from.
 
     Raises
     ------
@@ -202,4 +285,13 @@ def load_settings(
     if set_:
         data = merge_overrides(data, set_)
 
-    return Settings.model_validate(data)
+    settings = Settings.model_validate(data)
+
+    base_dir = config_path.parent if config_path is not None else Path.cwd()
+    settings.paths.rsk_directory = base_dir / settings.paths.rsk_directory
+    settings.paths.profiles_directory = (
+        base_dir / settings.paths.profiles_directory
+    )
+    settings.paths.binned_directory = base_dir / settings.paths.binned_directory
+
+    return settings

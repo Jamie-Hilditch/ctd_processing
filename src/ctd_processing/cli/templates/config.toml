@@ -1,11 +1,44 @@
 # ctd_processing configuration file
 #
-# Written by `ctd-processing init`. Pass this file to the `process`,
-# `bin`, and `concatenate` commands via `--config path/to/config.toml`.
-# Individual options can also be overridden on the command line with
-# `--set section.key=value` (repeatable), without editing this file.
+# Written by `ctd-processing init`, which sets [project] and [paths]
+# from its --name, --rsk-directory, --profiles-directory, and
+# --binned-directory options (see `ctd-processing init --help`). Pass
+# this file to the `process`, `bin`, and `concatenate` commands via
+# `--config path/to/config.toml`. Individual options can also be
+# overridden on the command line with `--set section.key=value`
+# (repeatable), without editing this file.
 #
-# No configuration options are defined yet: ctd_processing is still in
-# early scaffolding, and `process`/`bin`/`concatenate` are stubs. As
-# real options are added to `ctd_processing.config.Settings`, they will
-# be documented here with their default values and units.
+# Relative paths in this file (e.g. paths.rsk_directory) are resolved
+# relative to the directory containing this config.toml file, not the
+# current working directory.
+#
+# `process`, `bin`, and `concatenate` are still stubs pending the real
+# pyrsktools/gsw-based implementation.
+
+[project]
+
+# name (default: "my_ctd_processing_project"): a human-readable name
+# for this project. Attached to every output file's metadata.
+# name = "my_ctd_processing_project"
+
+[paths]
+
+# rsk_directory (required, no default): directory containing the raw
+# .rsk deployment files to process. If relative, resolved against the
+# directory containing this config.toml file. `process --target NAME`
+# resolves NAME relative to this directory; with no --target, every
+# top-level *.rsk file directly inside it is processed.
+# rsk_directory = "rsk_files"
+
+# profiles_directory (required, no default): directory for profile
+# files extracted from rsk_directory deployments. Resolved the same
+# way as rsk_directory.
+# profiles_directory = "profiles"
+
+# binned_directory (required, no default): directory for pressure or
+# depth-binned profile files produced from profiles_directory. Resolved
+# the same way as rsk_directory.
+# binned_directory = "binned"
+
+# [process] is reserved for process-specific options; none are defined
+# yet.

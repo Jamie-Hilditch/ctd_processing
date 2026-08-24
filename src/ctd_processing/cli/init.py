@@ -1,5 +1,6 @@
 """``init`` command: write a starter configuration file."""
 
+import json
 import tomllib
 from importlib import resources
 from pathlib import Path
@@ -17,13 +18,51 @@ _TEMPLATE_NAME = "config.toml"
 
 
 def init_command(
-    directory: Annotated[
-        Path,
-        typer.Argument(
-            help="Directory in which to write config.toml. Created if "
-            "it does not exist."
+    name: Annotated[
+        str,
+        typer.Option(
+            "--name",
+            help="Human-readable name for this project, stored as "
+            "project.name.",
         ),
-    ],
+    ] = "my_ctd_processing_project",
+    rsk_directory: Annotated[
+        Path,
+        typer.Option(
+            "--rsk-directory",
+            help="Directory for raw .rsk deployment files, stored as "
+            "paths.rsk_directory. If relative, resolved and created "
+            "relative to --working-dir.",
+        ),
+    ] = Path("rsk_files"),
+    profiles_directory: Annotated[
+        Path,
+        typer.Option(
+            "--profiles-directory",
+            help="Directory for extracted profile files, stored as "
+            "paths.profiles_directory. If relative, resolved and "
+            "created relative to --working-dir.",
+        ),
+    ] = Path("profiles"),
+    binned_directory: Annotated[
+        Path,
+        typer.Option(
+            "--binned-directory",
+            help="Directory for binned profile files, stored as "
+            "paths.binned_directory. If relative, resolved and "
+            "created relative to --working-dir.",
+        ),
+    ] = Path("binned"),
+    working_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--working-dir",
+            help="Directory in which to write config.toml, and against "
+            "which a relative --rsk-directory is resolved. Defaults to "
+            "the current working directory. Created if it does not "
+            "exist.",
+        ),
+    ] = None,
     template: Annotated[
         Path | None,
         typer.Option(
@@ -40,43 +79,72 @@ def init_command(
         typer.Option(
             "--force",
             "-f",
-            help="Overwrite an existing config.toml in `directory` if present.",
+            help="Overwrite an existing config.toml in the working "
+            "directory if present.",
         ),
     ] = False,
 ) -> None:
-    """Write a starter ``config.toml`` into a directory.
+    """Write a starter ``config.toml`` for a new ctd_processing project.
 
-    Copies a configuration template into `directory` so users have a
-    documented, editable starting point. The template is either the
-    package's bundled default, or a caller-supplied file via `template`.
-    Individual options in the written file can be overridden with `set_`.
+    Builds ``config.toml`` from a template (the package's bundled
+    default, or a caller-supplied file via `template`), with `name`
+    written into its ``[project]`` table and `rsk_directory`,
+    `profiles_directory`, and `binned_directory` written into its
+    ``[paths]`` table, `set_` overrides applied on top, and the three
+    directories created on disk. Since these options are always
+    applied, the output is always re-serialized and does not preserve
+    comments from the template.
 
     Parameters
     ----------
-    directory : pathlib.Path
-        Destination directory for the written ``config.toml``. Created
-        (including parents) if it does not already exist.
+    name : str, optional
+        Human-readable name for this project, written as
+        ``project.name``.
+    rsk_directory : pathlib.Path, optional
+        Directory for raw ``.rsk`` deployment files, written as
+        ``paths.rsk_directory`` exactly as given (relative or
+        absolute). If relative, it is resolved against `working_dir`
+        both to create the directory here and later, when
+        `ctd_processing.config.load_settings` resolves it against the
+        directory containing this ``config.toml``.
+    profiles_directory : pathlib.Path, optional
+        Directory for extracted profile files, written as
+        ``paths.profiles_directory``. Resolved and created the same
+        way as `rsk_directory`.
+    binned_directory : pathlib.Path, optional
+        Directory for binned profile files, written as
+        ``paths.binned_directory``. Resolved and created the same way
+        as `rsk_directory`.
+    working_dir : pathlib.Path or None, optional
+        Directory in which to write ``config.toml``, and against which
+        relative `rsk_directory`, `profiles_directory`, and
+        `binned_directory` values are resolved and created. Created
+        (including parents) if it does not already exist. Defaults to
+        the current working directory.
     template : pathlib.Path or None, optional
         Path to a TOML file to use instead of the bundled default
         template.
     set_ : list of str, optional
-        ``--set key=value`` overrides to apply to the template before
-        writing it out. Applying any override re-serializes the file,
-        which loses comments from the original template.
+        ``--set key=value`` overrides to apply on top of `name`,
+        `rsk_directory`, `profiles_directory`, and `binned_directory`.
     force : bool, optional
-        If ``False`` (default) and ``directory/config.toml`` already
-        exists, the command aborts without touching the existing file.
-        If ``True``, the existing file is overwritten.
+        If ``False`` (default) and ``config.toml`` already exists in
+        `working_dir`, the command aborts without touching the existing
+        file. If ``True``, the existing file is overwritten.
 
     Raises
     ------
     typer.Exit
         Raised with a non-zero exit code if ``config.toml`` already
-        exists in `directory` and `force` is ``False``, or if `set_`
-        contains a malformed or invalid override.
+        exists in `working_dir` and `force` is ``False``, or if `set_`
+        contains a malformed or invalid override, or if the merged
+        configuration is otherwise invalid.
     """
-    directory.mkdir(parents=True, exist_ok=True)
-    destination = directory / _TEMPLATE_NAME
+    resolved_working_dir = (
+        working_dir if working_dir is not None else Path.cwd()
+    )
+    resolved_working_dir.mkdir(parents=True, exist_ok=True)
+    destination = resolved_working_dir / _TEMPLATE_NAME
 
     if destination.exists() and not force:
         typer.echo(
@@ -92,16 +160,36 @@ def init_command(
         )
         template_text = template_resource.read_text(encoding="utf-8")
 
-    if set_:
-        try:
-            merged = merge_overrides(tomllib.loads(template_text), set_ or [])
-            Settings.model_validate(merged)
-        except (ValueError, ValidationError) as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(code=1) from exc
-        output_text = tomli_w.dumps(merged)
-    else:
-        output_text = template_text
+    project_overrides = [
+        f"project.name={json.dumps(name)}",
+        f"paths.rsk_directory={json.dumps(rsk_directory.as_posix())}",
+        f"paths.profiles_directory={json.dumps(profiles_directory.as_posix())}",
+        f"paths.binned_directory={json.dumps(binned_directory.as_posix())}",
+    ]
 
-    destination.write_text(output_text, encoding="utf-8")
-    typer.echo(f"Wrote configuration to {destination}")
+    try:
+        merged = merge_overrides(
+            tomllib.loads(template_text), project_overrides + (set_ or [])
+        )
+        settings = Settings.model_validate(merged)
+    except (ValueError, ValidationError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    paths = settings.paths
+    created_directories = {
+        "rsk_directory": resolved_working_dir / paths.rsk_directory,
+        "profiles_directory": resolved_working_dir / paths.profiles_directory,
+        "binned_directory": resolved_working_dir / paths.binned_directory,
+    }
+    for directory in created_directories.values():
+        directory.mkdir(parents=True, exist_ok=True)
+
+    destination.write_text(tomli_w.dumps(merged), encoding="utf-8")
+    created_summary = "\n".join(
+        f"  {field}: {directory}"
+        for field, directory in created_directories.items()
+    )
+    typer.echo(
+        f"Wrote configuration to {destination}\nCreated:\n{created_summary}"
+    )
