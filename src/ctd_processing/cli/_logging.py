@@ -37,6 +37,28 @@ class _MaxLevelFilter(logging.Filter):
         super().__init__()
         self.max_level = max_level
 
+    def __repr__(self) -> str:
+        """Unambiguous representation showing `max_level`.
+
+        Returns
+        -------
+        str
+            E.g. ``"_MaxLevelFilter(max_level=40)"``.
+        """
+        return f"{type(self).__name__}(max_level={self.max_level!r})"
+
+    def __str__(self) -> str:
+        """Concise, human-readable summary of this filter.
+
+        Returns
+        -------
+        str
+            E.g. ``"reject records at or above ERROR"``.
+        """
+        return (
+            f"reject records at or above {logging.getLevelName(self.max_level)}"
+        )
+
     def filter(self, record: logging.LogRecord) -> bool:
         """Return whether `record` is below `max_level`.
 

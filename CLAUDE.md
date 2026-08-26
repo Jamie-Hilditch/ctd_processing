@@ -8,6 +8,7 @@ The following conventions should be adopted for all classes and functions in the
 - Oceanographic variables should be computed inline with the TEOS-10 standards. In practice this means using the gsw package.
 - Outputs, particularly when in the form of netcdf or xarray datasets, should the Climate and Forecast (CF) Metadata Conventions.
   - `standard_name`, `long_name`, and `units` are critical metadata for all variables.
+- Every class should have a useful `__repr__` (unambiguous, developer-facing) and `__str__` (concise, human-readable summary). A class is exempt only when it inherits a representation that is already informative from its base class (e.g. `pydantic.BaseModel` subclasses, `enum` subclasses) — plain `object`/`@dataclass` classes need explicit overrides, especially where the default would be unhelpful or expensive (e.g. dumping a large array).
 
 CI is built on the UV ecosystem and pytest
 - uv run ruff format

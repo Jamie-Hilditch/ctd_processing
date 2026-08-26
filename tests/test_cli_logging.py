@@ -46,6 +46,14 @@ def test_max_level_filter_rejects_at_and_above_max() -> None:
     assert filter_.filter(at) is False
 
 
+def test_max_level_filter_repr_and_str() -> None:
+    """repr()/str() summarize max_level without a bare object-id repr."""
+    filter_ = _MaxLevelFilter(logging.ERROR)
+
+    assert repr(filter_) == "_MaxLevelFilter(max_level=40)"
+    assert str(filter_) == "reject records at or above ERROR"
+
+
 def test_configure_stdout_logging_writes_to_stdout(
     capsys: pytest.CaptureFixture,
 ) -> None:
