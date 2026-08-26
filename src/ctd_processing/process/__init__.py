@@ -17,6 +17,7 @@ from pathlib import Path
 
 from ctd_processing.config import ProcessSettings, ProjectSettings
 from ctd_processing.process.build import build_dataset
+from ctd_processing.process.raw_channels import process_raw_channels
 from ctd_processing.process.read import read_rsk
 
 logger = logging.getLogger(__name__)
@@ -32,11 +33,15 @@ def process_deployment(
 ) -> None:
     """Process one ``.rsk`` deployment into extracted profile files.
 
-    Reads the deployment and builds a `Dataset` from it (steps 1-2);
-    profile extraction, TEOS-10 derived variables, and CF-compliant
-    output are not yet implemented. `project` metadata (e.g. `name`) is
-    intended to be attached to every output file's metadata once
-    implemented.
+    Reads the deployment, builds a `Dataset` from it, and applies
+    configured raw-channel processing (`settings.raw_channels`) to every
+    channel (steps 1-3); profile extraction, TEOS-10 derived variables,
+    and CF-compliant output are not yet implemented. Once the `Dataset`
+    is built, the underlying `pyrsktools.RSK` object is no longer
+    referenced and is free to be garbage collected -- raw-channel
+    processing operates purely on the `Dataset`. `project` metadata (e.g.
+    `name`) is intended to be attached to every output file's metadata
+    once implemented.
 
     Parameters
     ----------
@@ -47,13 +52,14 @@ def process_deployment(
     profiles_directory : pathlib.Path
         Directory to write extracted profile files into.
     settings : ProcessSettings
-        Process-specific settings (currently none defined).
+        Process-specific settings, e.g. `raw_channels`.
     project : ProjectSettings
         Project metadata to attach to every output file.
     """
     logger.info("Reading deployment: %s", file)
     rsk = read_rsk(file)
     dataset = build_dataset(rsk, file, project)
+    dataset = process_raw_channels(dataset, settings)
     logger.debug("Built dataset: %s", dataset)
 
 

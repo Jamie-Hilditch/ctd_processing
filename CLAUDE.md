@@ -9,6 +9,7 @@ The following conventions should be adopted for all classes and functions in the
 - Outputs, particularly when in the form of netcdf or xarray datasets, should the Climate and Forecast (CF) Metadata Conventions.
   - `standard_name`, `long_name`, and `units` are critical metadata for all variables.
 - Every class should have a useful `__repr__` (unambiguous, developer-facing) and `__str__` (concise, human-readable summary). A class is exempt only when it inherits a representation that is already informative from its base class (e.g. `pydantic.BaseModel` subclasses, `enum` subclasses) — plain `object`/`@dataclass` classes need explicit overrides, especially where the default would be unhelpful or expensive (e.g. dumping a large array).
+- Whenever code calls `Channel`/`Dataset`'s `record`, `add_channel`, or `remove_channel`, the call site should also log the same action at the `VERBOSE` level (`ctd_processing.logging_utils.log_verbose`) — unless that action is already logged at a higher level (e.g. `INFO`) there, in which case the higher-level log is enough and a VERBOSE log would be redundant. `record`/`add_channel`/`remove_channel` themselves stay logging-free; this is the calling code's responsibility.
 
 CI is built on the UV ecosystem and pytest
 - uv run ruff format

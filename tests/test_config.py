@@ -7,6 +7,7 @@ from ctd_processing.config import (
     PathsSettings,
     ProcessSettings,
     ProjectSettings,
+    RawChannelSettings,
     Settings,
     load_settings,
     merge_overrides,
@@ -315,3 +316,129 @@ def test_load_settings_propagates_malformed_override() -> None:
     """A malformed --set pair raises ValueError, not a validation error."""
     with pytest.raises(ValueError, match="expected key=value"):
         load_settings(set_=["not-a-pair"])
+
+
+def test_process_raw_channels_defaults_to_empty(tmp_path) -> None:
+    """process.raw_channels defaults to {} when omitted."""
+    settings = load_settings(
+        set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
+        + _other_paths(tmp_path)
+    )
+    assert settings.process.raw_channels == {}
+
+
+def test_process_raw_channels_section_defaults_remove_holds_true(
+    tmp_path,
+) -> None:
+    """An empty raw-channel section still gets remove_holds=True."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.raw_channels.sea_water_temperature]\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.process.raw_channels == {
+        "sea_water_temperature": RawChannelSettings()
+    }
+    assert (
+        settings.process.raw_channels["sea_water_temperature"].remove_holds
+        is True
+    )
+    assert settings.process.raw_channels["sea_water_temperature"].offset is None
+    assert settings.process.raw_channels["sea_water_temperature"].shift is None
+
+
+def test_process_raw_channels_remove_holds_can_be_disabled(tmp_path) -> None:
+    """remove_holds = false parses correctly for a named raw channel."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.raw_channels.sea_water_temperature]\n"
+        "remove_holds = false\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert (
+        settings.process.raw_channels["sea_water_temperature"].remove_holds
+        is False
+    )
+
+
+def test_process_raw_channels_offset_can_be_set(tmp_path) -> None:
+    """Offset = 1.5 parses correctly for a named raw channel."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.raw_channels.sea_water_temperature]\n"
+        "offset = 1.5\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.process.raw_channels["sea_water_temperature"].offset == 1.5
+
+
+@pytest.mark.parametrize("shift", [3, -2])
+def test_process_raw_channels_shift_can_be_set(tmp_path, shift: int) -> None:
+    """A positive or negative shift value parses correctly."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.raw_channels.sea_water_temperature]\n"
+        f"shift = {shift}\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.process.raw_channels["sea_water_temperature"].shift == shift
+
+
+def test_process_raw_channels_rejects_unknown_key(tmp_path) -> None:
+    """An unknown key inside a raw-channel section fails validation."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.raw_channels.sea_water_temperature]\n"
+        "not_a_real_option = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)

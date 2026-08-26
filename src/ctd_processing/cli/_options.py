@@ -22,6 +22,7 @@ class LogLevel(StrEnum):
     """Log levels selectable via ``--log-level``."""
 
     DEBUG = "DEBUG"
+    VERBOSE = "VERBOSE"
     INFO = "INFO"
     WARNING = "WARNING"
     ERROR = "ERROR"
@@ -46,5 +47,25 @@ NoStdoutLogOption = Annotated[
     typer.Option(
         "--no-stdout-log",
         help="Disable writing log records to stdout.",
+    ),
+]
+
+# Global ``--verbose``/``--debug`` shortcuts, defined once on the app's
+# callback. Both override ``--log-level`` when given, regardless of what
+# ``--log-level`` is set to; ``--debug`` wins if both are given (it implies
+# ``--verbose``, since DEBUG is a lower/more detailed level than VERBOSE).
+VerboseOption = Annotated[
+    bool,
+    typer.Option(
+        "--verbose",
+        help="Enable VERBOSE-level logging. Overridden by --debug.",
+    ),
+]
+
+DebugOption = Annotated[
+    bool,
+    typer.Option(
+        "--debug",
+        help="Enable DEBUG-level logging (implies --verbose).",
     ),
 ]

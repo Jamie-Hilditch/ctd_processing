@@ -6,7 +6,11 @@ from pathlib import Path
 import pyrsktools
 
 from ctd_processing.config import ProjectSettings
-from ctd_processing.process.cf_channels import cf_metadata_for_longname
+from ctd_processing.logging_utils import log_verbose
+from ctd_processing.process.cf_channels import (
+    cf_metadata_for_longname,
+    channel_key_for_longname,
+)
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
 
@@ -43,10 +47,11 @@ def build_dataset(
 ) -> Dataset:
     """Build a `Dataset` from an opened, read `pyrsktools.RSK`.
 
-    Every channel in `rsk.channels` is added under its CF `standard_name`
-    where one is known (see `ctd_processing.process.cf_channels`), or
-    otherwise under pyrsktools' own channel identifier
-    (`Channel.longName`) as a fallback.
+    Every channel in `rsk.channels` is added under
+    `ctd_processing.process.cf_channels.channel_key_for_longname`'s result
+    for it -- a short, stable identifier, deliberately not the (often
+    long and qualifier-laden) CF `standard_name`, which is still recorded
+    in the channel's own `metadata` when known.
 
     Parameters
     ----------
@@ -66,8 +71,8 @@ def build_dataset(
     Dataset
         A Dataset whose `time` channel is `rsk.data["timestamp"]`, with
         every measured/derived channel pyrsktools reports added under its
-        CF-mapped or fallback name (see above), and `metadata` populated
-        with deployment/instrument provenance.
+        `channel_key_for_longname` key (see above), and `metadata`
+        populated with deployment/instrument provenance.
 
     Raises
     ------
@@ -97,6 +102,7 @@ def build_dataset(
         }
     )
     dataset.record(f"read from {file}")
+    log_verbose(logger, "read from %s", file)
 
     data_field_names = rsk.data.dtype.names or ()
     for rsk_channel in rsk.channels:
@@ -108,7 +114,7 @@ def build_dataset(
             continue
 
         cf = cf_metadata_for_longname(rsk_channel.longName)
-        key = cf.standard_name or rsk_channel.longName
+        key = channel_key_for_longname(rsk_channel.longName)
         if key in dataset.channels:
             logger.warning(
                 "Channel name %r already used in this dataset; adding "
@@ -134,5 +140,6 @@ def build_dataset(
             data=rsk.data[rsk_channel.longName], metadata=metadata
         )
         dataset.add_channel(key, channel)
+        log_verbose(logger, "added channel %r", key)
 
     return dataset

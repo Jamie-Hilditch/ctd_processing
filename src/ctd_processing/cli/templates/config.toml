@@ -49,5 +49,32 @@
 # at ERROR level and above to. Resolved the same way as log_file.
 # error_log_file = "ctd_processing.error.log"
 
-# [process] is reserved for process-specific options; none are defined
-# yet.
+# [process.raw_channels.<name>] sections are optional and configure
+# per-channel processing of the *raw* channels built from a deployment's
+# .rsk data. <name> is the short identifier a channel is stored under in
+# the built dataset -- e.g. "sea_water_temperature" -- not the raw
+# pyrsktools field name and not the full CF standard_name. A channel with
+# no section here just uses the defaults below. Section names depend on
+# which channels your instrument reports; the example below is
+# illustrative, not required.
+#
+# [process.raw_channels.sea_water_temperature]
+#
+# remove_holds (default: true): remove "held" (repeated-value) stretches
+# from this channel's data before further processing.
+# remove_holds = true
+#
+# shift (optional, default: unset): number of samples to shift this
+# channel's data by, e.g. to correct a known sensor response lag relative
+# to the other channels. Follows pandas' Series.shift(periods=shift)
+# convention: positive delays the channel (each sample takes the value
+# from `shift` samples earlier, leaving the first `shift` samples as NaN);
+# negative advances it (each sample takes the value from abs(shift)
+# samples later, leaving the last abs(shift) samples as NaN). Applied
+# after remove_holds and before offset. Unset means no shift is applied.
+# shift = 0
+#
+# offset (optional, default: unset): a fixed offset to add to this
+# channel's data, e.g. to correct a known calibration bias. Applied after
+# remove_holds/shift. Unset means no offset is applied.
+# offset = 0.0

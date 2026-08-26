@@ -170,6 +170,150 @@ def test_cli_no_stdout_log_silences_log_records(
     assert "not yet implemented" in result.stdout
 
 
+@pytest.mark.requires_example_data
+def test_cli_verbose_shows_verbose_level_messages(
+    tmp_path: Path, example_rsk_path: Path
+) -> None:
+    """--verbose surfaces build_dataset's VERBOSE-level history logs."""
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+    shutil.copy(example_rsk_path, rsk_dir / "deployment.rsk")
+
+    result = runner.invoke(
+        app,
+        [
+            "--verbose",
+            "process",
+            "--set",
+            f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        ]
+        + _other_paths(tmp_path),
+    )
+
+    assert "added channel" in result.stdout
+    assert "Opening RSK file" not in result.stdout
+
+
+@pytest.mark.requires_example_data
+def test_cli_default_level_hides_verbose_messages(
+    tmp_path: Path, example_rsk_path: Path
+) -> None:
+    """Without --verbose/--debug, VERBOSE-level history logs are hidden."""
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+    shutil.copy(example_rsk_path, rsk_dir / "deployment.rsk")
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--set",
+            f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        ]
+        + _other_paths(tmp_path),
+    )
+
+    assert "added channel" not in result.stdout
+
+
+@pytest.mark.requires_example_data
+def test_cli_debug_implies_verbose(
+    tmp_path: Path, example_rsk_path: Path
+) -> None:
+    """--debug shows both DEBUG and VERBOSE-level messages."""
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+    shutil.copy(example_rsk_path, rsk_dir / "deployment.rsk")
+
+    result = runner.invoke(
+        app,
+        [
+            "--debug",
+            "process",
+            "--set",
+            f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        ]
+        + _other_paths(tmp_path),
+    )
+
+    assert "Opening RSK file" in result.stdout
+    assert "added channel" in result.stdout
+
+
+@pytest.mark.requires_example_data
+def test_cli_debug_overrides_verbose_when_both_given(
+    tmp_path: Path, example_rsk_path: Path
+) -> None:
+    """--verbose --debug together behave like --debug alone."""
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+    shutil.copy(example_rsk_path, rsk_dir / "deployment.rsk")
+
+    result = runner.invoke(
+        app,
+        [
+            "--verbose",
+            "--debug",
+            "process",
+            "--set",
+            f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        ]
+        + _other_paths(tmp_path),
+    )
+
+    assert "Opening RSK file" in result.stdout
+
+
+@pytest.mark.requires_example_data
+def test_cli_debug_overrides_explicit_log_level(
+    tmp_path: Path, example_rsk_path: Path
+) -> None:
+    """--debug wins even over an explicit, less verbose --log-level."""
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+    shutil.copy(example_rsk_path, rsk_dir / "deployment.rsk")
+
+    result = runner.invoke(
+        app,
+        [
+            "--log-level",
+            "ERROR",
+            "--debug",
+            "process",
+            "--set",
+            f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        ]
+        + _other_paths(tmp_path),
+    )
+
+    assert "Opening RSK file" in result.stdout
+
+
+@pytest.mark.requires_example_data
+def test_cli_log_level_verbose_choice(
+    tmp_path: Path, example_rsk_path: Path
+) -> None:
+    """--log-level VERBOSE shows VERBOSE messages but not DEBUG ones."""
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+    shutil.copy(example_rsk_path, rsk_dir / "deployment.rsk")
+
+    result = runner.invoke(
+        app,
+        [
+            "--log-level",
+            "VERBOSE",
+            "process",
+            "--set",
+            f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        ]
+        + _other_paths(tmp_path),
+    )
+
+    assert "added channel" in result.stdout
+    assert "Opening RSK file" not in result.stdout
+
+
 def test_cli_process_writes_split_log_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

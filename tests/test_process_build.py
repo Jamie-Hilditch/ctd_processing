@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from ctd_processing.config import ProjectSettings
+from ctd_processing.logging_utils import VERBOSE
 from ctd_processing.process.build import build_dataset
 from ctd_processing.process.read import read_rsk
 
@@ -50,10 +51,15 @@ def test_build_dataset_metadata_from_instrument_and_project(
 
 
 @pytest.mark.requires_example_data
-def test_build_dataset_maps_temperature_to_cf_standard_name(
+def test_build_dataset_keys_channels_by_long_name_slug(
     example_rsk_path: Path,
 ) -> None:
-    """The temperature channel ends up keyed by its CF standard_name."""
+    """Channels are keyed by a slug of long_name, not by standard_name.
+
+    Temperature's slug happens to coincide with its standard_name, but
+    pressure's doesn't ("absolute_pressure" vs. "sea_water_pressure") --
+    checking both demonstrates the key really comes from long_name.
+    """
     rsk = read_rsk(example_rsk_path)
 
     dataset = build_dataset(rsk, example_rsk_path, ProjectSettings())
@@ -71,6 +77,10 @@ def test_build_dataset_maps_temperature_to_cf_standard_name(
         rsk_temperature_channel.unitsPlainText or rsk_temperature_channel.units
     )
     assert temperature.metadata["units"] == expected_units
+
+    pressure = dataset.channels["absolute_pressure"]
+    assert pressure.metadata["standard_name"] == "sea_water_pressure"
+    assert pressure.metadata["long_name"] == "Absolute pressure"
 
 
 @pytest.mark.requires_example_data
@@ -92,3 +102,22 @@ def test_build_dataset_covers_every_data_channel(
         c.longName for c in rsk.channels if c.longName in data_field_names
     }
     assert source_channel_names == expected
+
+
+@pytest.mark.requires_example_data
+def test_build_dataset_logs_at_verbose_level(
+    example_rsk_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """build_dataset logs the read and each add_channel at VERBOSE."""
+    rsk = read_rsk(example_rsk_path)
+    caplog.set_level(VERBOSE, logger="ctd_processing.process.build")
+
+    build_dataset(rsk, example_rsk_path, ProjectSettings())
+
+    verbose_messages = {
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == VERBOSE
+    }
+    assert f"read from {example_rsk_path}" in verbose_messages
+    assert "added channel 'sea_water_temperature'" in verbose_messages

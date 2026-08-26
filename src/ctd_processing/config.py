@@ -71,15 +71,58 @@ class PathsSettings(BaseModel):
     error_log_file: Path | None = None
 
 
-class ProcessSettings(BaseModel):
-    """Settings specific to the ``process`` command.
+class RawChannelSettings(BaseModel):
+    """Per-raw-channel processing settings.
 
-    Currently defines no fields. Extension point for process-specific
-    options (e.g. TEOS-10 conversion parameters) once
-    `ctd_processing.cli.process.process_deployment` needs them.
+    Attributes
+    ----------
+    remove_holds : bool
+        Whether to remove "held" (repeated-value) stretches from this
+        channel's data before further processing. Defaults to ``True``.
+    shift : int or None
+        Number of samples to shift this channel's data by, e.g. to
+        correct a known sensor response lag relative to the other
+        channels. Follows pandas' ``Series.shift(periods=shift)``
+        convention: a positive value delays the channel (each sample
+        takes the value from `shift` samples earlier, leaving the first
+        `shift` samples as NaN); a negative value advances it (each
+        sample takes the value from ``abs(shift)`` samples later, leaving
+        the last ``abs(shift)`` samples as NaN). Applied after
+        `remove_holds` and before `offset`. Optional; defaults to
+        ``None``, meaning no shift is applied.
+    offset : float or None
+        A fixed offset to add to this channel's data, e.g. to correct a
+        known calibration bias. Applied after `remove_holds`/`shift`.
+        Optional; defaults to ``None``, meaning no offset is applied.
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    remove_holds: bool = True
+    shift: int | None = None
+    offset: float | None = None
+
+
+class ProcessSettings(BaseModel):
+    """Settings specific to the ``process`` command.
+
+    Attributes
+    ----------
+    raw_channels : dict[str, RawChannelSettings]
+        Per-raw-channel processing settings, keyed by
+        `ctd_processing.process.cf_channels.channel_key_for_longname`'s
+        result for that channel -- the same short identifier a channel
+        ends up under in `ctd_processing.process.dataset.Dataset.channels`
+        (e.g. ``"sea_water_temperature"``), not the raw pyrsktools field
+        name and not the full CF `standard_name`. A channel needs no
+        entry here at all; an absent entry just means
+        `RawChannelSettings`'s defaults apply to it. Defaults to an empty
+        dict.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    raw_channels: dict[str, RawChannelSettings] = Field(default_factory=dict)
 
 
 class Settings(BaseSettings):
@@ -102,8 +145,8 @@ class Settings(BaseSettings):
         `rsk_directory`. Required, since none of its fields have a
         default.
     process : ProcessSettings
-        Settings specific to the ``process`` command. Optional;
-        currently has no fields.
+        Settings specific to the ``process`` command, e.g. `raw_channels`.
+        Optional; every field of `ProcessSettings` has a default.
     """
 
     model_config = SettingsConfigDict(extra="forbid")

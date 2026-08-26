@@ -15,9 +15,16 @@ channels with no real CF equivalent (raw fluorometer/turbidity counts,
 accelerometer axes, instrument housekeeping temperatures, etc.).
 """
 
+import re
 from dataclasses import dataclass
 
-__all__ = ["ChannelCFMetadata", "cf_metadata_for_longname"]
+__all__ = [
+    "ChannelCFMetadata",
+    "cf_metadata_for_longname",
+    "channel_key_for_longname",
+]
+
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 
 @dataclass(frozen=True)
@@ -202,3 +209,55 @@ def cf_metadata_for_longname(long_name: str) -> ChannelCFMetadata:
     return _CF_CHANNEL_METADATA.get(
         long_name, ChannelCFMetadata(long_name=long_name, standard_name=None)
     )
+
+
+def _slugify(text: str) -> str:
+    """Lowercase `text` and join runs of non-alphanumeric characters with `_`.
+
+    Parameters
+    ----------
+    text : str
+        Text to slugify.
+
+    Returns
+    -------
+    str
+        E.g. ``"Sea water temperature"`` -> ``"sea_water_temperature"``.
+    """
+    return _NON_ALNUM.sub("_", text.lower()).strip("_")
+
+
+def channel_key_for_longname(long_name: str) -> str:
+    """Return the short, stable identifier to store a channel under.
+
+    This is deliberately **not** the CF `standard_name` (see
+    `cf_metadata_for_longname`) -- `standard_name`s can be long and
+    cluttered with qualifiers needed to disambiguate related quantities
+    (e.g. ``mole_concentration_of_dissolved_molecular_oxygen_in_sea_water``),
+    which makes them a poor fit for a dict key, a config-section name, or
+    anything else meant to be typed by a person. Instead this slugifies
+    the channel's CF-style `long_name`, which this module already defines
+    to be short and unique per channel.
+
+    `Dataset.channels` (`ctd_processing.process.build.build_dataset`) and
+    `process.raw_channels` config sections
+    (`ctd_processing.config.ProcessSettings`) are both keyed by this
+    function's return value.
+
+    Parameters
+    ----------
+    long_name : str
+        A `pyrsktools.datatypes.Channel.longName` value (see module
+        docstring for what this actually is) -- the same input
+        `cf_metadata_for_longname` takes.
+
+    Returns
+    -------
+    str
+        E.g. ``"temperature"`` -> ``"sea_water_temperature"``,
+        ``"dissolved_o2_concentration"`` ->
+        ``"dissolved_oxygen_concentration"``. For a `long_name` this
+        module doesn't recognize, slugifies pyrsktools' own (already
+        snake_case) identifier, which is usually a no-op.
+    """
+    return _slugify(cf_metadata_for_longname(long_name).long_name)

@@ -3,6 +3,7 @@
 from ctd_processing.process.cf_channels import (
     ChannelCFMetadata,
     cf_metadata_for_longname,
+    channel_key_for_longname,
 )
 
 
@@ -28,3 +29,20 @@ def test_unrecognized_channel_falls_back_to_input() -> None:
     result = cf_metadata_for_longname("ph")
 
     assert result == ChannelCFMetadata(long_name="ph", standard_name=None)
+
+
+def test_channel_key_slugifies_long_name_not_standard_name() -> None:
+    """The key comes from long_name, which may differ from standard_name."""
+    assert channel_key_for_longname("temperature") == "sea_water_temperature"
+    assert channel_key_for_longname("pressure") == "absolute_pressure"
+    assert channel_key_for_longname("sea_pressure") == "sea_pressure"
+    assert channel_key_for_longname("salinity") == "practical_salinity"
+    assert (
+        channel_key_for_longname("dissolved_o2_concentration")
+        == "dissolved_oxygen_concentration"
+    )
+
+
+def test_channel_key_for_unrecognized_channel_is_usually_a_no_op() -> None:
+    """An unrecognized, already-snake_case longName round-trips unchanged."""
+    assert channel_key_for_longname("ph") == "ph"
