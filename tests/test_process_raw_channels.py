@@ -3,7 +3,11 @@
 import numpy as np
 import pytest
 
-from ctd_processing.config import ProcessSettings, RawChannelSettings
+from ctd_processing.config import (
+    GeolocationSettings,
+    ProcessSettings,
+    RawChannelSettings,
+)
 from ctd_processing.logging_utils import VERBOSE
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
@@ -13,6 +17,10 @@ from ctd_processing.process.raw_channels import (
     process_raw_channels,
     remove_holds,
     shift_time,
+)
+
+_GEOLOCATION = GeolocationSettings(
+    reference_latitude=0.0, reference_longitude=0.0
 )
 
 
@@ -388,7 +396,8 @@ def test_process_raw_channels_applies_configured_settings_by_name() -> None:
             "sea_water_temperature": RawChannelSettings(
                 remove_holds=False, offset=1.0
             )
-        }
+        },
+        geolocation=_GEOLOCATION,
     )
 
     result = process_raw_channels(dataset, settings)
@@ -402,7 +411,9 @@ def test_process_raw_channels_unconfigured_channel_uses_defaults() -> None:
     """A channel with no raw_channels entry still gets remove_holds=True."""
     dataset = _dataset_with_channels()
 
-    result = process_raw_channels(dataset, ProcessSettings())
+    result = process_raw_channels(
+        dataset, ProcessSettings(geolocation=_GEOLOCATION)
+    )
 
     assert np.array_equal(
         result.channels["sea_water_practical_salinity"].data,
@@ -415,7 +426,9 @@ def test_process_raw_channels_skips_time() -> None:
     """The 'time' channel is never processed, even if it looks like a hold."""
     dataset = _dataset_with_channels()
 
-    result = process_raw_channels(dataset, ProcessSettings())
+    result = process_raw_channels(
+        dataset, ProcessSettings(geolocation=_GEOLOCATION)
+    )
 
     assert np.array_equal(result.time.data, [0.0, 1.0, 2.0])
     assert result.time.history == []
@@ -425,6 +438,8 @@ def test_process_raw_channels_returns_same_dataset() -> None:
     """process_raw_channels mutates in place and returns `dataset`."""
     dataset = _dataset_with_channels()
 
-    result = process_raw_channels(dataset, ProcessSettings())
+    result = process_raw_channels(
+        dataset, ProcessSettings(geolocation=_GEOLOCATION)
+    )
 
     assert result is dataset

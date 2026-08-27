@@ -16,6 +16,21 @@ from ctd_processing.config import Settings, merge_overrides
 _TEMPLATE_PACKAGE = "ctd_processing.cli.templates"
 _TEMPLATE_NAME = "config.toml"
 
+# Stand-in for `process.geolocation` used only to validate the rest of a
+# freshly-`init`ed config. `process.geolocation` has no default (see
+# `ctd_processing.config.GeolocationSettings`) and `init` has no way to know
+# a real position, so this is substituted in purely so `Settings.model_validate`
+# below can still catch other mistakes (bad --set overrides, an invalid
+# template); it is never written to disk -- the actual `merged` dict, still
+# missing `geolocation`, is what gets written, matching the bundled
+# template's own `[process.geolocation]` block being commented out by
+# default. The written config will not validate for `process`/`bin`/
+# `concatenate` until the user fills in `[process.geolocation]` themselves.
+_VALIDATION_ONLY_GEOLOCATION = {
+    "reference_latitude": 0.0,
+    "reference_longitude": 0.0,
+}
+
 
 def init_command(
     name: Annotated[
@@ -116,6 +131,15 @@ def init_command(
     always re-serialized and does not preserve comments from the
     template.
 
+    ``[process.geolocation]`` (see
+    `ctd_processing.config.GeolocationSettings`) has no default and this
+    command has no way to know a project's real position, so it is left
+    unset in the written file (as the bundled template's own
+    ``[process.geolocation]`` block already is, commented out) unless
+    `set_` supplies it. The written ``config.toml`` will not validate for
+    ``process``/``bin``/``concatenate`` until ``[process.geolocation]`` is
+    filled in by hand.
+
     Parameters
     ----------
     name : str, optional
@@ -209,7 +233,16 @@ def init_command(
         merged = merge_overrides(
             tomllib.loads(template_text), project_overrides + (set_ or [])
         )
-        settings = Settings.model_validate(merged)
+        validation_data = merged
+        if "geolocation" not in merged.get("process", {}):
+            validation_data = {
+                **merged,
+                "process": {
+                    **merged.get("process", {}),
+                    "geolocation": _VALIDATION_ONLY_GEOLOCATION,
+                },
+            }
+        settings = Settings.model_validate(validation_data)
     except (ValueError, ValidationError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc

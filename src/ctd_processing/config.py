@@ -275,6 +275,96 @@ class CTLagSettings(BaseModel):
         return self
 
 
+class GeolocationSettings(BaseModel):
+    """Settings for attaching a position to each extracted profile.
+
+    See `ctd_processing.process.geolocation.attach_geolocation`, applied to
+    each profile's own extracted `Dataset` after it is sliced out of the
+    full deployment (see `ctd_processing.process.save.save_profiles`).
+    Every profile is given a `profile_start_time`/`profile_end_time` (its
+    first/last `time` samples) and a `latitude`/`longitude` position,
+    recorded in that profile's `Dataset.metadata`. This step is not
+    optional -- exactly one of `external_dataset_path` or
+    `reference_latitude`/`reference_longitude` must be configured; there is
+    no numeric fallback, so an unconfigured project fails validation rather
+    than silently attaching a placeholder position.
+
+    Attributes
+    ----------
+    external_dataset_path : pathlib.Path or None
+        Path to a netCDF file holding a `latitude_variable`/
+        `longitude_variable` time series to interpolate each profile's
+        position from, evaluated at the profile's start time (its
+        "canonical" time). `latitude_variable`/`longitude_variable` must
+        share their dimension with `time_variable`. Resolved the same way
+        as `ctd_processing.config.PathsSettings.rsk_directory` when
+        relative. Optional; defaults to ``None``. Mutually exclusive with
+        `reference_latitude`/`reference_longitude`.
+    latitude_variable : str
+        Name of the latitude variable in `external_dataset_path`, in
+        decimal degrees north. Defaults to ``"latitude"``.
+    longitude_variable : str
+        Name of the longitude variable in `external_dataset_path`, in
+        decimal degrees east. Defaults to ``"longitude"``.
+    time_variable : str
+        Name of the time coordinate in `external_dataset_path` that
+        `latitude_variable`/`longitude_variable` are indexed by. Defaults
+        to ``"time"``.
+    reference_latitude : float or None
+        A fixed latitude, in decimal degrees north (``-90`` to ``90``),
+        used for every profile instead of interpolating from an external
+        dataset. Optional; defaults to ``None``. Mutually exclusive with
+        `external_dataset_path`; must be set together with
+        `reference_longitude`.
+    reference_longitude : float or None
+        A fixed longitude, in decimal degrees east (``-180`` to ``180``),
+        used for every profile instead of interpolating from an external
+        dataset. Optional; defaults to ``None``. Mutually exclusive with
+        `external_dataset_path`; must be set together with
+        `reference_latitude`.
+
+    Raises
+    ------
+    ValueError
+        If both `external_dataset_path` and a reference position are set,
+        if only one of `reference_latitude`/`reference_longitude` is set,
+        or if neither an external dataset nor a complete reference
+        position is set.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    external_dataset_path: Path | None = None
+    latitude_variable: str = "latitude"
+    longitude_variable: str = "longitude"
+    time_variable: str = "time"
+    reference_latitude: float | None = Field(default=None, ge=-90.0, le=90.0)
+    reference_longitude: float | None = Field(default=None, ge=-180.0, le=180.0)
+
+    @model_validator(mode="after")
+    def _validate_exactly_one_source(self) -> "GeolocationSettings":
+        """Require exactly one geolocation source to be configured."""
+        has_external = self.external_dataset_path is not None
+        has_lat = self.reference_latitude is not None
+        has_lon = self.reference_longitude is not None
+        if has_external and (has_lat or has_lon):
+            raise ValueError(
+                "Set either external_dataset_path or "
+                "reference_latitude/reference_longitude, not both."
+            )
+        if has_lat != has_lon:
+            raise ValueError(
+                "reference_latitude and reference_longitude must be set "
+                "together."
+            )
+        if not has_external and not has_lat:
+            raise ValueError(
+                "Set either external_dataset_path or "
+                "reference_latitude/reference_longitude."
+            )
+        return self
+
+
 class ProcessSettings(BaseModel):
     """Settings specific to the ``process`` command.
 
@@ -311,6 +401,24 @@ class ProcessSettings(BaseModel):
         `CTLagSettings`), applied after `profiles` are identified.
         Optional; every field has a default, and `CTLagSettings.enabled`
         defaults to ``False``.
+    profile_format : {"netcdf", "parquet"}
+        File format for extracted profile files written to
+        ``paths.profiles_directory`` (see
+        `ctd_processing.process.save.save_profiles`). ``"parquet"``
+        (the default) is written with zstd compression and byte-stream-split
+        encoding for float columns -- the better fit for this fast,
+        size-sensitive intermediate stage. ``"netcdf"`` writes
+        CF-compliant files (``units``/``long_name``/``standard_name`` as
+        variable attributes, project/deployment metadata and processing
+        history as global attributes) via `xarray` and `h5netcdf` --
+        better for long-term self-description and interop with CF-aware
+        tools (e.g. ERDDAP, OceanSITES), at the cost of a larger,
+        less-compressed file. Defaults to ``"parquet"``.
+    geolocation : GeolocationSettings
+        Settings for attaching a position to each extracted profile (see
+        `GeolocationSettings`). Required -- unlike every other field of
+        this class, it has no default, since `GeolocationSettings` itself
+        has no valid unconfigured state.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -319,6 +427,8 @@ class ProcessSettings(BaseModel):
     atmospheric_pressure: float | None = None
     profiles: ProfileSettings = Field(default_factory=ProfileSettings)
     ct_lag: CTLagSettings = Field(default_factory=CTLagSettings)
+    profile_format: Literal["netcdf", "parquet"] = "parquet"
+    geolocation: GeolocationSettings
 
 
 class InstrumentSettings(BaseModel):
@@ -398,7 +508,7 @@ class Settings(BaseSettings):
         default.
     process : ProcessSettings
         Settings specific to the ``process`` command, e.g. `raw_channels`.
-        Optional; every field of `ProcessSettings` has a default.
+        Required, since `ProcessSettings.geolocation` has no default.
     instruments : dict[str, InstrumentSettings]
         Per-instrument overrides of `process`, keyed by instrument serial
         number (see `InstrumentSettings`). Optional; defaults to an empty
@@ -418,7 +528,7 @@ class Settings(BaseSettings):
 
     project: ProjectSettings = Field(default_factory=ProjectSettings)
     paths: PathsSettings
-    process: ProcessSettings = Field(default_factory=ProcessSettings)
+    process: ProcessSettings
     instruments: dict[str, InstrumentSettings] = Field(default_factory=dict)
     deployments: dict[str, DeploymentSettings] = Field(default_factory=dict)
 
@@ -674,11 +784,12 @@ def load_settings(
     Settings
         The loaded and validated settings. Relative
         ``paths.rsk_directory``, ``paths.profiles_directory``,
-        ``paths.binned_directory``, and (when given) ``paths.log_file``
-        and ``paths.error_log_file`` values are resolved against the
-        directory containing `config_path` (or the current working
-        directory if `config_path` is ``None``), so a project's config
-        resolves correctly regardless of where it is loaded from.
+        ``paths.binned_directory``, (when given) ``paths.log_file`` and
+        ``paths.error_log_file``, and (when given)
+        ``process.geolocation.external_dataset_path`` values are resolved
+        against the directory containing `config_path` (or the current
+        working directory if `config_path` is ``None``), so a project's
+        config resolves correctly regardless of where it is loaded from.
 
     Raises
     ------
@@ -716,5 +827,9 @@ def load_settings(
         settings.paths.log_file = base_dir / settings.paths.log_file
     if settings.paths.error_log_file is not None:
         settings.paths.error_log_file = base_dir / settings.paths.error_log_file
+    if settings.process.geolocation.external_dataset_path is not None:
+        settings.process.geolocation.external_dataset_path = (
+            base_dir / settings.process.geolocation.external_dataset_path
+        )
 
     return settings

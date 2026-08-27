@@ -22,6 +22,7 @@ from ctd_processing.process.ct_lag import process_ct_lag
 from ctd_processing.process.profiles import find_profiles
 from ctd_processing.process.raw_channels import process_raw_channels
 from ctd_processing.process.read import read_rsk
+from ctd_processing.process.save import save_profiles
 from ctd_processing.process.sea_pressure import compute_sea_pressure
 
 logger = logging.getLogger(__name__)
@@ -48,13 +49,14 @@ def process_deployment(
     `absolute_pressure` if `atmospheric_pressure` is set), identifies
     profiles from it using `profiles`, and, if configured (`ct_lag`),
     calculates and applies a deployment-wide conductivity/temperature lag
-    correction. Profile extraction, TEOS-10 derived variables, and
-    CF-compliant output are not yet implemented.
+    correction. Finally, every identified profile is extracted from the
+    full-deployment `Dataset` and written into `profiles_directory` in
+    `process_settings.profile_format` (see
+    :func:`ctd_processing.process.save.save_profiles`). TEOS-10 derived
+    variables are not yet implemented.
     Once the `Dataset` is built, the underlying `pyrsktools.RSK` object
     is no longer referenced and is free to be garbage collected -- every
-    later step operates purely on the `Dataset`. `settings.project`
-    metadata (e.g. `name`) is intended to be attached to every output
-    file's metadata once implemented.
+    later step operates purely on the `Dataset`.
 
     Parameters
     ----------
@@ -87,6 +89,16 @@ def process_deployment(
     profiles = find_profiles(dataset, process_settings.profiles)
     logger.info("Identified %d profile(s) in %s", len(profiles), file)
     dataset = process_ct_lag(dataset, profiles, process_settings.ct_lag)
+    profile_paths = save_profiles(
+        dataset,
+        profiles,
+        profiles_directory,
+        process_settings.profile_format,
+        process_settings.geolocation,
+    )
+    logger.info(
+        "Wrote %d profile file(s) to %s", len(profile_paths), profiles_directory
+    )
     logger.debug("Built dataset: %s", dataset)
 
 

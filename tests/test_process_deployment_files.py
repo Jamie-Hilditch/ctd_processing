@@ -6,8 +6,17 @@ from pathlib import Path
 import pytest
 
 import ctd_processing.process as process_module
-from ctd_processing.config import PathsSettings, ProcessSettings, Settings
+from ctd_processing.config import (
+    GeolocationSettings,
+    PathsSettings,
+    ProcessSettings,
+    Settings,
+)
 from ctd_processing.process import process_deployment_files
+
+_GEOLOCATION = GeolocationSettings(
+    reference_latitude=0.0, reference_longitude=0.0
+)
 
 
 def _touch(path: Path) -> Path:
@@ -22,7 +31,7 @@ def _settings(tmp_path: Path) -> Settings:
             profiles_directory=tmp_path / "profiles",
             binned_directory=tmp_path / "binned",
         ),
-        process=ProcessSettings(),
+        process=ProcessSettings(geolocation=_GEOLOCATION),
     )
 
 

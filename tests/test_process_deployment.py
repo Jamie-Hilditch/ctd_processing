@@ -1,14 +1,19 @@
 """Tests for ctd_processing.process."""
 
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 
+import pyarrow.parquet as pq
 import pytest
+import xarray as xr
 
 import ctd_processing.process as process_module
 from ctd_processing.config import (
     DeploymentSettings,
+    GeolocationSettings,
     InstrumentSettings,
     PathsSettings,
     ProcessSettings,
@@ -16,6 +21,10 @@ from ctd_processing.config import (
 )
 from ctd_processing.logging_utils import VERBOSE
 from ctd_processing.process import process_deployment
+
+_GEOLOCATION = GeolocationSettings(
+    reference_latitude=0.0, reference_longitude=0.0
+)
 
 
 def _settings(
@@ -30,7 +39,7 @@ def _settings(
             profiles_directory=tmp_path / "profiles",
             binned_directory=tmp_path / "binned",
         ),
-        process=ProcessSettings(),
+        process=ProcessSettings(geolocation=_GEOLOCATION),
         instruments=instruments or {},
         deployments=deployments or {},
     )
@@ -40,16 +49,56 @@ def _settings(
 def test_process_deployment_reads_and_returns_none(
     tmp_path: Path, example_rsk_path: Path
 ) -> None:
-    """process_deployment reads the deployment (step 1) and returns None.
-
-    Profile extraction is not yet implemented, so a real, readable
-    ``.rsk`` deployment currently produces no further effect.
-    """
+    """process_deployment reads and processes the deployment, returning None."""
     result = process_deployment(
         example_rsk_path, tmp_path / "profiles", _settings(tmp_path)
     )
 
     assert result is None
+
+
+@pytest.mark.requires_example_data
+@pytest.mark.parametrize(
+    ("profile_format", "extension"),
+    [("parquet", ".parquet"), ("netcdf", ".nc")],
+)
+def test_process_deployment_writes_one_file_per_profile(
+    tmp_path: Path,
+    example_rsk_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    profile_format: Literal["netcdf", "parquet"],
+    extension: str,
+) -> None:
+    """Every profile identified is written to profiles_directory, in format."""
+    caplog.set_level(logging.INFO, logger="ctd_processing.process")
+    profiles_directory = tmp_path / "profiles"
+    settings = _settings(tmp_path)
+    settings.process.profile_format = profile_format
+
+    process_deployment(example_rsk_path, profiles_directory, settings)
+
+    messages = [record.getMessage() for record in caplog.records]
+    identified = next(
+        int(m.split()[1])
+        for m in messages
+        if "Identified" in m and "profile(s)" in m
+    )
+    written_files = list(profiles_directory.glob(f"*{extension}"))
+    assert identified > 0
+    assert len(written_files) == identified
+
+    if profile_format == "parquet":
+        metadata = json.loads(
+            pq.read_schema(written_files[0]).metadata[
+                b"ctd_processing.dataset_metadata"
+            ]
+        )
+    else:
+        with xr.open_dataset(written_files[0], engine="h5netcdf") as ds:
+            metadata = dict(ds.attrs)
+    assert metadata["latitude"] == 0.0
+    assert metadata["longitude"] == 0.0
+    assert metadata["position_source"] == "reference position"
 
 
 @pytest.mark.requires_example_data
@@ -153,6 +202,11 @@ def _stub_pipeline(monkeypatch: pytest.MonkeyPatch, serial_number: str) -> dict:
         process_module,
         "process_ct_lag",
         lambda dataset, profiles, settings: dataset,
+    )
+    monkeypatch.setattr(
+        process_module,
+        "save_profiles",
+        lambda dataset, profiles, directory, format, geolocation: [],
     )
 
     return captured

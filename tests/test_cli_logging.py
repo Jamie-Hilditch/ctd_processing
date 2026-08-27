@@ -27,12 +27,21 @@ def _reset_logging():
 
 
 def _other_paths(tmp_path: Path) -> list[str]:
-    """CLI args for the required profiles_directory/binned_directory."""
+    """CLI args for profiles_directory/binned_directory/geolocation.
+
+    `geolocation` is included here (not just the two required `paths`
+    fields) since `[process.geolocation]` is itself required -- see
+    `ctd_processing.config.GeolocationSettings`.
+    """
     return [
         "--set",
         f'paths.profiles_directory="{(tmp_path / "profiles").as_posix()}"',
         "--set",
         f'paths.binned_directory="{(tmp_path / "binned").as_posix()}"',
+        "--set",
+        "process.geolocation.reference_latitude=0.0",
+        "--set",
+        "process.geolocation.reference_longitude=0.0",
     ]
 
 

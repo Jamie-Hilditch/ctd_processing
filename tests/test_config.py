@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from ctd_processing.config import (
     CTLagSettings,
     DeploymentSettings,
+    GeolocationSettings,
     InstrumentSettings,
     PathsSettings,
     ProcessSettings,
@@ -19,12 +20,23 @@ from ctd_processing.config import (
     resolve_process_settings,
 )
 
+_GEOLOCATION = GeolocationSettings(
+    reference_latitude=0.0, reference_longitude=0.0
+)
+
 
 def _other_paths(tmp_path) -> list[str]:
-    """--set args for the required profiles_directory/binned_directory."""
+    """--set args for profiles_directory/binned_directory/geolocation.
+
+    `geolocation` is included here (not just the two required `paths`
+    fields) since `[process.geolocation]` is itself required -- see
+    `GeolocationSettings`.
+    """
     return [
         f'paths.profiles_directory="{(tmp_path / "profiles").as_posix()}"',
         f'paths.binned_directory="{(tmp_path / "binned").as_posix()}"',
+        "process.geolocation.reference_latitude=0.0",
+        "process.geolocation.reference_longitude=0.0",
     ]
 
 
@@ -93,16 +105,166 @@ def test_load_settings_missing_paths_raises() -> None:
         load_settings()
 
 
-def test_load_settings_project_and_process_default_without_paths_set(
-    tmp_path,
-) -> None:
-    """project/process are optional; only [paths] is required."""
+def test_load_settings_project_defaults_without_project_set(tmp_path) -> None:
+    """Project is optional; [paths]/[process.geolocation] are required."""
     settings = load_settings(
         set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
         + _other_paths(tmp_path)
     )
     assert settings.project == ProjectSettings()
-    assert settings.process == ProcessSettings()
+    assert settings.process == ProcessSettings(geolocation=_GEOLOCATION)
+
+
+def test_load_settings_missing_process_geolocation_raises(tmp_path) -> None:
+    """Omitting [process.geolocation] fails validation, like missing [paths]."""
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    with pytest.raises(ValidationError):
+        load_settings(
+            set_=[
+                f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+                f'paths.profiles_directory="{profiles_dir.as_posix()}"',
+                f'paths.binned_directory="{binned_dir.as_posix()}"',
+            ]
+        )
+
+
+def test_geolocation_settings_rejects_neither_source_set() -> None:
+    """Neither external_dataset_path nor a reference position set fails."""
+    with pytest.raises(ValidationError):
+        GeolocationSettings()
+
+
+def test_geolocation_settings_rejects_both_sources_set() -> None:
+    """Setting both external_dataset_path and a reference position fails."""
+    with pytest.raises(ValidationError):
+        GeolocationSettings(
+            external_dataset_path="gps.nc",
+            reference_latitude=0.0,
+            reference_longitude=0.0,
+        )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"reference_latitude": 0.0},
+        {"reference_longitude": 0.0},
+    ],
+)
+def test_geolocation_settings_rejects_partial_reference_position(
+    kwargs: dict,
+) -> None:
+    """reference_latitude/reference_longitude must be set together."""
+    with pytest.raises(ValidationError):
+        GeolocationSettings(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"reference_latitude": 91.0, "reference_longitude": 0.0},
+        {"reference_latitude": -91.0, "reference_longitude": 0.0},
+        {"reference_latitude": 0.0, "reference_longitude": 181.0},
+        {"reference_latitude": 0.0, "reference_longitude": -181.0},
+    ],
+)
+def test_geolocation_settings_rejects_out_of_range_position(
+    kwargs: dict,
+) -> None:
+    """reference_latitude/reference_longitude outside their range fail."""
+    with pytest.raises(ValidationError):
+        GeolocationSettings(**kwargs)
+
+
+def test_geolocation_settings_accepts_external_dataset_only() -> None:
+    """external_dataset_path alone, with no reference position, is valid."""
+    settings = GeolocationSettings(external_dataset_path="gps.nc")
+    assert settings.reference_latitude is None
+    assert settings.reference_longitude is None
+
+
+def test_geolocation_settings_accepts_reference_position_only() -> None:
+    """A complete reference position alone, with no dataset, is valid."""
+    settings = GeolocationSettings(
+        reference_latitude=45.0, reference_longitude=-125.0
+    )
+    assert settings.external_dataset_path is None
+
+
+def test_load_settings_resolves_relative_external_dataset_path(
+    tmp_path,
+) -> None:
+    """A relative external_dataset_path resolves against the config parent."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_path = project_dir / "config.toml"
+    config_path.write_text(
+        "[paths]\n"
+        'rsk_directory = "rsk_files"\n'
+        'profiles_directory = "profiles_files"\n'
+        'binned_directory = "binned_files"\n'
+        "[process.geolocation]\n"
+        'external_dataset_path = "gps.nc"\n',
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert (
+        settings.process.geolocation.external_dataset_path
+        == project_dir / "gps.nc"
+    )
+
+
+def test_load_settings_keeps_absolute_external_dataset_path(tmp_path) -> None:
+    """An absolute external_dataset_path in the config is left untouched."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_path = project_dir / "config.toml"
+    gps_path = tmp_path / "elsewhere" / "gps.nc"
+    config_path.write_text(
+        "[paths]\n"
+        'rsk_directory = "rsk_files"\n'
+        'profiles_directory = "profiles_files"\n'
+        'binned_directory = "binned_files"\n'
+        "[process.geolocation]\n"
+        f'external_dataset_path = "{gps_path.as_posix()}"\n',
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.process.geolocation.external_dataset_path == gps_path
+
+
+def test_resolve_process_settings_geolocation_instrument_override(
+    tmp_path,
+) -> None:
+    """A partial instrument override merges field-by-field onto geolocation."""
+    settings = Settings(
+        paths=PathsSettings(
+            rsk_directory="rsk",
+            profiles_directory="profiles",
+            binned_directory="binned",
+        ),
+        process=ProcessSettings(
+            geolocation=GeolocationSettings(
+                reference_latitude=0.0, reference_longitude=0.0
+            )
+        ),
+        instruments={
+            "208532": InstrumentSettings(
+                process={"geolocation": {"reference_latitude": 45.0}}
+            )
+        },
+    )
+
+    resolved = resolve_process_settings(settings, serial_number="208532")
+
+    assert resolved.geolocation.reference_latitude == 45.0
+    assert resolved.geolocation.reference_longitude == 0.0
 
 
 @pytest.mark.parametrize(
@@ -130,7 +292,10 @@ def test_load_settings_reads_toml_file(tmp_path) -> None:
         "[paths]\n"
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
-        f'binned_directory = "{binned_dir.as_posix()}"\n',
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n",
         encoding="utf-8",
     )
     assert load_settings(config_path) == Settings(
@@ -138,7 +303,8 @@ def test_load_settings_reads_toml_file(tmp_path) -> None:
             rsk_directory=rsk_dir,
             profiles_directory=profiles_dir,
             binned_directory=binned_dir,
-        )
+        ),
+        process=ProcessSettings(geolocation=_GEOLOCATION),
     )
 
 
@@ -153,7 +319,10 @@ def test_load_settings_resolves_relative_paths_against_config_parent(
         "[paths]\n"
         'rsk_directory = "rsk_files"\n'
         'profiles_directory = "profiles_files"\n'
-        'binned_directory = "binned_files"\n',
+        'binned_directory = "binned_files"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n",
         encoding="utf-8",
     )
 
@@ -178,7 +347,10 @@ def test_load_settings_keeps_absolute_paths_from_file(
         "[paths]\n"
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
-        f'binned_directory = "{binned_dir.as_posix()}"\n',
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n",
         encoding="utf-8",
     )
 
@@ -200,6 +372,8 @@ def test_load_settings_resolves_relative_paths_against_cwd(
             'paths.rsk_directory="rsk_files"',
             'paths.profiles_directory="profiles_files"',
             'paths.binned_directory="binned_files"',
+            "process.geolocation.reference_latitude=0.0",
+            "process.geolocation.reference_longitude=0.0",
         ]
     )
 
@@ -262,7 +436,10 @@ def test_load_settings_resolves_relative_log_files_against_config_parent(
         'profiles_directory = "profiles_files"\n'
         'binned_directory = "binned_files"\n'
         'log_file = "logs/ctd.log"\n'
-        'error_log_file = "logs/ctd.error.log"\n',
+        'error_log_file = "logs/ctd.error.log"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n",
         encoding="utf-8",
     )
 
@@ -287,7 +464,10 @@ def test_load_settings_keeps_absolute_log_files_from_file(tmp_path) -> None:
         'profiles_directory = "profiles_files"\n'
         'binned_directory = "binned_files"\n'
         f'log_file = "{log_file.as_posix()}"\n'
-        f'error_log_file = "{error_log_file.as_posix()}"\n',
+        f'error_log_file = "{error_log_file.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n",
         encoding="utf-8",
     )
 
@@ -345,6 +525,9 @@ def test_process_raw_channels_section_defaults_remove_holds_true(
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[process.raw_channels.sea_water_temperature]\n",
         encoding="utf-8",
     )
@@ -373,6 +556,9 @@ def test_process_raw_channels_remove_holds_can_be_disabled(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[process.raw_channels.sea_water_temperature]\n"
         "remove_holds = false\n",
         encoding="utf-8",
@@ -397,6 +583,9 @@ def test_process_raw_channels_offset_can_be_set(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[process.raw_channels.sea_water_temperature]\n"
         "offset = 1.5\n",
         encoding="utf-8",
@@ -419,6 +608,9 @@ def test_process_raw_channels_shift_can_be_set(tmp_path, shift: int) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[process.raw_channels.sea_water_temperature]\n"
         f"shift = {shift}\n",
         encoding="utf-8",
@@ -440,6 +632,9 @@ def test_process_raw_channels_rejects_unknown_key(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[process.raw_channels.sea_water_temperature]\n"
         "not_a_real_option = 1\n",
         encoding="utf-8",
@@ -490,6 +685,9 @@ def test_process_profiles_fields_can_be_set(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[process.profiles]\n"
         "min_pressure = 0.5\n"
         "peak_height = 10.0\n"
@@ -517,6 +715,9 @@ def test_process_profiles_rejects_unknown_key(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[process.profiles]\n"
         "not_a_real_option = 1\n",
         encoding="utf-8",
@@ -537,8 +738,39 @@ def test_process_profiles_rejects_invalid_direction(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[process.profiles]\n"
         'direction = "sideways"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+def test_process_settings_profile_format_defaults_to_parquet() -> None:
+    """profile_format defaults to "parquet" when unset."""
+    assert ProcessSettings(geolocation=_GEOLOCATION).profile_format == "parquet"
+
+
+def test_process_settings_rejects_invalid_profile_format(tmp_path) -> None:
+    """An invalid profile_format value fails validation."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
+        "[process]\n"
+        'profile_format = "csv"\n',
         encoding="utf-8",
     )
 
@@ -567,6 +799,9 @@ def test_process_ct_lag_fields_can_be_set(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[process.ct_lag]\n"
         "enabled = true\n"
         "sea_pressure_min = 1.0\n"
@@ -598,6 +833,9 @@ def test_process_ct_lag_rejects_unknown_key(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[process.ct_lag]\n"
         "not_a_real_option = 1\n",
         encoding="utf-8",
@@ -640,6 +878,9 @@ def test_instruments_section_parses_from_file(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[instruments.208532.process]\n"
         "atmospheric_pressure = 10.1\n",
         encoding="utf-8",
@@ -663,6 +904,9 @@ def test_deployments_section_parses_from_file(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[deployments.243188_20260809_0304.process]\n"
         "atmospheric_pressure = 10.1325\n",
         encoding="utf-8",
@@ -688,6 +932,9 @@ def test_instruments_rejects_unknown_key(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[instruments.208532]\n"
         "not_a_real_option = 1\n",
         encoding="utf-8",
@@ -708,6 +955,9 @@ def test_deployments_rejects_unknown_key(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[deployments.243188_20260809_0304]\n"
         "not_a_real_option = 1\n",
         encoding="utf-8",
@@ -728,6 +978,9 @@ def test_load_settings_rejects_invalid_instrument_override(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[instruments.208532.process]\n"
         "not_a_real_option = 1\n",
         encoding="utf-8",
@@ -748,6 +1001,9 @@ def test_load_settings_rejects_invalid_deployment_override(tmp_path) -> None:
         f'rsk_directory = "{rsk_dir.as_posix()}"\n'
         f'profiles_directory = "{profiles_dir.as_posix()}"\n'
         f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
         "[deployments.243188_20260809_0304.process]\n"
         "not_a_real_option = 1\n",
         encoding="utf-8",
@@ -793,7 +1049,9 @@ def test_resolve_process_settings_returns_project_settings_unchanged() -> None:
             profiles_directory="profiles",
             binned_directory="binned",
         ),
-        process=ProcessSettings(atmospheric_pressure=10.0),
+        process=ProcessSettings(
+            atmospheric_pressure=10.0, geolocation=_GEOLOCATION
+        ),
     )
 
     resolved = resolve_process_settings(
@@ -811,7 +1069,9 @@ def test_resolve_process_settings_applies_instrument_override() -> None:
             profiles_directory="profiles",
             binned_directory="binned",
         ),
-        process=ProcessSettings(atmospheric_pressure=10.0),
+        process=ProcessSettings(
+            atmospheric_pressure=10.0, geolocation=_GEOLOCATION
+        ),
         instruments={
             "208532": InstrumentSettings(
                 process={
@@ -837,7 +1097,9 @@ def test_resolve_process_settings_applies_deployment_override() -> None:
             profiles_directory="profiles",
             binned_directory="binned",
         ),
-        process=ProcessSettings(atmospheric_pressure=10.0),
+        process=ProcessSettings(
+            atmospheric_pressure=10.0, geolocation=_GEOLOCATION
+        ),
         deployments={
             "243188_20260809_0304": DeploymentSettings(
                 process={"atmospheric_pressure": 10.5}
@@ -858,7 +1120,9 @@ def test_resolve_process_settings_deployment_wins_over_instrument() -> None:
             profiles_directory="profiles",
             binned_directory="binned",
         ),
-        process=ProcessSettings(atmospheric_pressure=10.0),
+        process=ProcessSettings(
+            atmospheric_pressure=10.0, geolocation=_GEOLOCATION
+        ),
         instruments={
             "208532": InstrumentSettings(process={"atmospheric_pressure": 10.1})
         },
@@ -884,7 +1148,9 @@ def test_resolve_process_settings_combines_disjoint_overrides() -> None:
             profiles_directory="profiles",
             binned_directory="binned",
         ),
-        process=ProcessSettings(atmospheric_pressure=10.0),
+        process=ProcessSettings(
+            atmospheric_pressure=10.0, geolocation=_GEOLOCATION
+        ),
         instruments={
             "208532": InstrumentSettings(
                 process={

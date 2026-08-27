@@ -100,6 +100,17 @@
 # [process]
 # atmospheric_pressure = 10.1325
 
+# profile_format (default: "parquet"): file format for extracted profile
+# files written to profiles_directory. "parquet" (default) is compressed
+# with zstd and byte-stream-split encoding for float columns -- the
+# better fit for this fast, size-sensitive intermediate stage. "netcdf"
+# writes CF-compliant files (units/long_name/standard_name as variable
+# attributes, project/deployment metadata and processing history as
+# global attributes) via xarray + h5netcdf -- better for long-term
+# self-description and interop with CF-aware tools (ERDDAP, OceanSITES,
+# etc.), at the cost of a larger, less-compressed file.
+# profile_format = "parquet"
+
 # [process.profiles] configures identifying individual profiles (casts)
 # from the sea_pressure channel via the `profinder` package. All fields
 # are optional; the defaults below are profinder's own and are tuned for
@@ -207,6 +218,38 @@
 # in samples, to search over. min_lag must be <= max_lag.
 # min_lag = -20
 # max_lag = 20
+
+# [process.geolocation] attaches a position to every extracted profile,
+# evaluated at the profile's start time (its "canonical" time). Unlike
+# every other [process.*] section on this page, this one is REQUIRED --
+# process does not validate without it. Configure exactly one of the two
+# mutually exclusive options below.
+#
+# [process.geolocation]
+
+# Option 1: interpolate from an external netCDF position time series.
+#
+# external_dataset_path (no default): path to a netCDF file holding a
+# latitude/longitude time series. Resolved the same way as rsk_directory
+# when relative. Raises an error if a profile's canonical time falls
+# outside this dataset's time coverage, rather than guessing.
+# external_dataset_path = "gps_track.nc"
+#
+# latitude_variable, longitude_variable, time_variable (defaults:
+# "latitude", "longitude", "time"): variable names to read from
+# external_dataset_path. latitude_variable/longitude_variable must share
+# their dimension with time_variable.
+# latitude_variable = "latitude"
+# longitude_variable = "longitude"
+# time_variable = "time"
+
+# Option 2: a fixed reference position, used for every profile.
+#
+# reference_latitude, reference_longitude (no default): a fixed position,
+# in decimal degrees north/east, used for every profile instead of an
+# external dataset. Must be set together.
+# reference_latitude = 45.0
+# reference_longitude = -125.0
 
 # [instruments.<serial_number>] sections are optional and override
 # [process] settings for one specific instrument, identified by its
