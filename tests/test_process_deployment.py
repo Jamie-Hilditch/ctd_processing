@@ -1,5 +1,6 @@
 """Tests for ctd_processing.process."""
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -52,3 +53,50 @@ def test_process_deployment_applies_raw_channel_processing(
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("zero-order hold value(s)" in m for m in messages)
+
+
+@pytest.mark.requires_example_data
+def test_process_deployment_reuses_logged_sea_pressure(
+    tmp_path: Path,
+    example_rsk_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """process_deployment's compute_sea_pressure step runs against real data.
+
+    The example file already logs a sea_pressure channel directly
+    (verified via `build_dataset`), and default settings leave
+    `atmospheric_pressure` unset, so `compute_sea_pressure` should trust
+    that channel as-is rather than recompute it -- proving that step ran
+    against real data.
+    """
+    caplog.set_level(logging.INFO, logger="ctd_processing.process.sea_pressure")
+
+    process_deployment(
+        example_rsk_path,
+        tmp_path / "profiles",
+        ProcessSettings(),
+        ProjectSettings(),
+    )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("sea_pressure channel already present" in m for m in messages)
+
+
+@pytest.mark.requires_example_data
+def test_process_deployment_identifies_profiles(
+    tmp_path: Path,
+    example_rsk_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """process_deployment logs the number of profiles it identified."""
+    caplog.set_level(logging.INFO, logger="ctd_processing.process")
+
+    process_deployment(
+        example_rsk_path,
+        tmp_path / "profiles",
+        ProcessSettings(),
+        ProjectSettings(),
+    )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Identified" in m and "profile(s)" in m for m in messages)

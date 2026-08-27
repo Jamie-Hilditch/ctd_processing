@@ -4,9 +4,10 @@ Sister package to :mod:`ctd_processing.cli`. :func:`process_deployment_files`
 is the entry point that :mod:`ctd_processing.cli.process` calls with the
 full batch of resolved ``.rsk`` deployment files; :func:`process_deployment`
 is the per-deployment worker it dispatches to. The rest of this package
-holds the supporting implementation (reading deployments, extracting
-profiles, computing TEOS-10 derived variables with `gsw`, and writing
-CF-compliant output) that :func:`process_deployment` will grow to use.
+holds the supporting implementation (reading deployments, identifying and
+extracting profiles, computing TEOS-10 derived variables with `gsw`, and
+writing CF-compliant output) that :func:`process_deployment` will grow to
+use.
 """
 
 import logging
@@ -17,8 +18,10 @@ from pathlib import Path
 
 from ctd_processing.config import ProcessSettings, ProjectSettings
 from ctd_processing.process.build import build_dataset
+from ctd_processing.process.profiles import find_profiles
 from ctd_processing.process.raw_channels import process_raw_channels
 from ctd_processing.process.read import read_rsk
+from ctd_processing.process.sea_pressure import compute_sea_pressure
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +36,16 @@ def process_deployment(
 ) -> None:
     """Process one ``.rsk`` deployment into extracted profile files.
 
-    Reads the deployment, builds a `Dataset` from it, and applies
-    configured raw-channel processing (`settings.raw_channels`) to every
-    channel (steps 1-3); profile extraction, TEOS-10 derived variables,
-    and CF-compliant output are not yet implemented. Once the `Dataset`
-    is built, the underlying `pyrsktools.RSK` object is no longer
-    referenced and is free to be garbage collected -- raw-channel
-    processing operates purely on the `Dataset`. `project` metadata (e.g.
+    Reads the deployment, builds a `Dataset` from it, applies configured
+    raw-channel processing (`settings.raw_channels`) to every channel,
+    ensures a `sea_pressure` channel exists (trusting one already in the
+    dataset by default, or recomputing it from `absolute_pressure` if
+    `settings.atmospheric_pressure` is set), and identifies profiles from
+    it using `settings.profiles`. Profile extraction, TEOS-10 derived
+    variables, and CF-compliant output are not yet implemented. Once the
+    `Dataset` is built, the underlying `pyrsktools.RSK` object is no
+    longer referenced and is free to be garbage collected -- every later
+    step operates purely on the `Dataset`. `project` metadata (e.g.
     `name`) is intended to be attached to every output file's metadata
     once implemented.
 
@@ -52,7 +58,7 @@ def process_deployment(
     profiles_directory : pathlib.Path
         Directory to write extracted profile files into.
     settings : ProcessSettings
-        Process-specific settings, e.g. `raw_channels`.
+        Process-specific settings, e.g. `raw_channels`, `profiles`.
     project : ProjectSettings
         Project metadata to attach to every output file.
     """
@@ -60,6 +66,9 @@ def process_deployment(
     rsk = read_rsk(file)
     dataset = build_dataset(rsk, file, project)
     dataset = process_raw_channels(dataset, settings)
+    dataset = compute_sea_pressure(dataset, settings.atmospheric_pressure)
+    profiles = find_profiles(dataset, settings.profiles)
+    logger.info("Identified %d profile(s) in %s", len(profiles), file)
     logger.debug("Built dataset: %s", dataset)
 
 

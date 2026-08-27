@@ -78,3 +78,91 @@
 # channel's data, e.g. to correct a known calibration bias. Applied after
 # remove_holds/shift. Unset means no offset is applied.
 # offset = 0.0
+
+# [process] settings not scoped to a single raw channel.
+
+# atmospheric_pressure (optional, default: unset): constant atmospheric
+# pressure, in dbar, subtracted from the absolute_pressure channel to
+# (re)compute sea_pressure, overwriting any sea_pressure channel already
+# present. Unset (the default) means the dataset's own sea_pressure
+# channel is trusted and used as-is instead -- RBR's Ruskin software
+# commonly derives sea_pressure itself from absolute_pressure and a
+# per-deployment atmospheric reference before the .rsk file is even
+# read, so there is normally nothing to recompute. With this left unset,
+# it is an error for a deployment to have no sea_pressure channel at
+# all. Set this to force a specific atmospheric pressure instead, e.g.
+# ``10.1325`` for the standard atmosphere.
+# [process]
+# atmospheric_pressure = 10.1325
+
+# [process.profiles] configures identifying individual profiles (casts)
+# from the sea_pressure channel via the `profinder` package. All fields
+# are optional; the defaults below are profinder's own and are tuned for
+# a multi-hundred-dbar oceanic deployment -- re-tune peak_height,
+# peak_distance, peak_width, and peak_prominence to your deployment's
+# depth range and sampling rate.
+#
+# [process.profiles]
+
+# apply_smoothing (default: false): apply Savitzky-Golay smoothing to
+# the pressure record before detecting profiles.
+# apply_smoothing = false
+
+# window_length (default: 9): Savitzky-Golay window length, in samples.
+# Only used if apply_smoothing is true.
+# window_length = 9
+
+# polyorder (default: 2): Savitzky-Golay polynomial order. Only used if
+# apply_smoothing is true.
+# polyorder = 2
+
+# min_pressure (default: -1.0): a profile must start and end at a sea
+# pressure greater than this value, in dbar, to be considered a real,
+# in-water profile.
+# min_pressure = -1.0
+
+# peak_height, peak_distance, peak_width, peak_prominence: minimum
+# height (dbar), distance (samples), width (samples), and prominence
+# (dbar) for a cast turnaround (maximum pressure) to be detected as a
+# peak. Forwarded to scipy.signal.find_peaks.
+# peak_height = 25.0
+# peak_distance = 200
+# peak_width = 200
+# peak_prominence = 25.0
+
+# trough_prominence, trough_distance, trough_width: minimum prominence
+# (dbar), distance (samples), and width (samples) for a surface point
+# (a trough in sea pressure) to be detected. Forwarded to
+# scipy.signal.find_peaks.
+# trough_prominence = 2.0
+# trough_distance = 5
+# trough_width = 5
+
+# run_length (default: 4): number of consecutive samples of consistent
+# pressure change required to confirm a real descent/ascent, guarding
+# against noise.
+# run_length = 4
+
+# min_pressure_change (default: 0.01): minimum pressure change, in
+# dbar, between consecutive samples for run_length's consistency check.
+# min_pressure_change = 0.01
+
+# apply_speed_threshold (default: false): additionally require a
+# minimum profiling speed (computed from sea pressure and time), rather
+# than relying only on peak/trough detection.
+# apply_speed_threshold = false
+
+# min_speed (default: 0.2): minimum profiling speed, in dbar/s,
+# required when apply_speed_threshold is true.
+# min_speed = 0.2
+
+# direction (default: "down"): which cast direction(s) to identify
+# profiles for. One of "up", "down", "both".
+# direction = "down"
+
+# missing (default: "drop"): how to handle non-finite values in the
+# pressure record. "raise" raises an error; "drop" drops them before
+# detection. Defaults to "drop" (not profinder's own "raise" default)
+# since sea_pressure routinely has NaNs from upstream remove_holds
+# processing.
+# missing = "drop"

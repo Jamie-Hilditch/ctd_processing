@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from ctd_processing.config import (
     PathsSettings,
     ProcessSettings,
+    ProfileSettings,
     ProjectSettings,
     RawChannelSettings,
     Settings,
@@ -437,6 +438,103 @@ def test_process_raw_channels_rejects_unknown_key(tmp_path) -> None:
         f'binned_directory = "{binned_dir.as_posix()}"\n'
         "[process.raw_channels.sea_water_temperature]\n"
         "not_a_real_option = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+def test_process_atmospheric_pressure_defaults_to_none(tmp_path) -> None:
+    """process.atmospheric_pressure defaults to None (trust sea_pressure)."""
+    settings = load_settings(
+        set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
+        + _other_paths(tmp_path)
+    )
+    assert settings.process.atmospheric_pressure is None
+
+
+def test_process_atmospheric_pressure_can_be_overridden(tmp_path) -> None:
+    """process.atmospheric_pressure can be overridden via --set."""
+    settings = load_settings(
+        set_=[
+            f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"',
+            "process.atmospheric_pressure=10.05",
+        ]
+        + _other_paths(tmp_path)
+    )
+    assert settings.process.atmospheric_pressure == 10.05
+
+
+def test_process_profiles_defaults(tmp_path) -> None:
+    """process.profiles defaults to ProfileSettings() when omitted."""
+    settings = load_settings(
+        set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
+        + _other_paths(tmp_path)
+    )
+    assert settings.process.profiles == ProfileSettings()
+
+
+def test_process_profiles_fields_can_be_set(tmp_path) -> None:
+    """[process.profiles] fields parse correctly from a config file."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.profiles]\n"
+        "min_pressure = 0.5\n"
+        "peak_height = 10.0\n"
+        'direction = "both"\n'
+        "apply_speed_threshold = true\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.process.profiles.min_pressure == 0.5
+    assert settings.process.profiles.peak_height == 10.0
+    assert settings.process.profiles.direction == "both"
+    assert settings.process.profiles.apply_speed_threshold is True
+
+
+def test_process_profiles_rejects_unknown_key(tmp_path) -> None:
+    """An unknown key inside [process.profiles] fails validation."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.profiles]\n"
+        "not_a_real_option = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+def test_process_profiles_rejects_invalid_direction(tmp_path) -> None:
+    """An invalid direction value fails validation."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.profiles]\n"
+        'direction = "sideways"\n',
         encoding="utf-8",
     )
 

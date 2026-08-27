@@ -2,7 +2,7 @@
 
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import (
@@ -103,6 +103,106 @@ class RawChannelSettings(BaseModel):
     offset: float | None = None
 
 
+class ProfileSettings(BaseModel):
+    """Settings for identifying individual profiles (casts) via `profinder`.
+
+    Fields mirror `profinder.find_profiles`'s parameters, flattened into
+    named, documented settings rather than passing through opaque `dict`
+    kwargs. See `ctd_processing.process.profiles.find_profiles`, which
+    applies these to the dataset's `sea_pressure` channel.
+
+    Attributes
+    ----------
+    apply_smoothing : bool
+        Whether to apply Savitzky-Golay smoothing to the pressure record
+        before detecting profiles. Defaults to ``False``.
+    window_length : int
+        Savitzky-Golay window length, in samples. Only used if
+        `apply_smoothing` is ``True``. Defaults to ``9``.
+    polyorder : int
+        Savitzky-Golay polynomial order. Only used if `apply_smoothing`
+        is ``True``. Defaults to ``2``.
+    min_pressure : float
+        A profile must start and end at a sea pressure greater than this
+        value, in dbar, to be considered a real, in-water profile.
+        Defaults to ``-1.0``.
+    peak_height : float
+        Minimum sea pressure, in dbar, for a cast turnaround (maximum
+        pressure) to be detected as a peak. Forwarded to
+        `scipy.signal.find_peaks` as its ``height`` argument. Defaults to
+        ``25.0``.
+    peak_distance : int
+        Minimum number of samples between detected cast turnarounds.
+        Forwarded to `scipy.signal.find_peaks` as its ``distance``
+        argument. Defaults to ``200``.
+    peak_width : int
+        Minimum width, in samples, of a detected cast turnaround.
+        Forwarded to `scipy.signal.find_peaks` as its ``width`` argument.
+        Defaults to ``200``.
+    peak_prominence : float
+        Minimum prominence, in dbar, of a detected cast turnaround.
+        Forwarded to `scipy.signal.find_peaks` as its ``prominence``
+        argument. Defaults to ``25.0``.
+    trough_prominence : float
+        Minimum prominence, in dbar, of a detected surface point (i.e. a
+        trough in sea pressure). Forwarded to `scipy.signal.find_peaks`
+        as its ``prominence`` argument. Defaults to ``2.0``.
+    trough_distance : int
+        Minimum number of samples between detected surface points.
+        Forwarded to `scipy.signal.find_peaks` as its ``distance``
+        argument. Defaults to ``5``.
+    trough_width : int
+        Minimum width, in samples, of a detected surface point.
+        Forwarded to `scipy.signal.find_peaks` as its ``width`` argument.
+        Defaults to ``5``.
+    run_length : int
+        Number of consecutive samples of consistent pressure change
+        required to confirm a real descent/ascent, guarding against
+        noise. Defaults to ``4``.
+    min_pressure_change : float
+        Minimum pressure change, in dbar, between consecutive samples
+        for `run_length`'s consistency check. Defaults to ``0.01``.
+    apply_speed_threshold : bool
+        Whether to additionally require a minimum profiling speed
+        (computed from sea pressure and time), rather than relying only
+        on peak/trough detection. Defaults to ``False``.
+    min_speed : float
+        Minimum profiling speed, in dbar/s, required when
+        `apply_speed_threshold` is ``True``. Defaults to ``0.2``.
+    direction : {"up", "down", "both"}
+        Which cast direction(s) to identify profiles for. Defaults to
+        ``"down"``.
+    missing : {"raise", "drop"}
+        How to handle non-finite values in the pressure record:
+        ``"raise"`` raises an error, ``"drop"`` drops them before
+        detection. Defaults to ``"drop"``, not `profinder`'s own
+        ``"raise"`` default -- `sea_pressure` routinely has NaNs from
+        upstream `remove_holds` processing (see
+        `RawChannelSettings.remove_holds`), so treating that as an
+        error would be routine pipeline behavior rejecting itself.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    apply_smoothing: bool = False
+    window_length: int = 9
+    polyorder: int = 2
+    min_pressure: float = -1.0
+    peak_height: float = 25.0
+    peak_distance: int = 200
+    peak_width: int = 200
+    peak_prominence: float = 25.0
+    trough_prominence: float = 2.0
+    trough_distance: int = 5
+    trough_width: int = 5
+    run_length: int = 4
+    min_pressure_change: float = 0.01
+    apply_speed_threshold: bool = False
+    min_speed: float = 0.2
+    direction: Literal["up", "down", "both"] = "down"
+    missing: Literal["raise", "drop"] = "drop"
+
+
 class ProcessSettings(BaseModel):
     """Settings specific to the ``process`` command.
 
@@ -118,11 +218,29 @@ class ProcessSettings(BaseModel):
         entry here at all; an absent entry just means
         `RawChannelSettings`'s defaults apply to it. Defaults to an empty
         dict.
+    atmospheric_pressure : float or None
+        Constant atmospheric pressure, in dbar, subtracted from the
+        `absolute_pressure` channel to (re)compute `sea_pressure`,
+        overwriting any `sea_pressure` channel already present in the
+        dataset (see `ctd_processing.process.sea_pressure.
+        compute_sea_pressure`). Optional; defaults to ``None``, meaning
+        the dataset's own `sea_pressure` channel is trusted and used
+        as-is -- RBR's Ruskin software commonly derives this itself from
+        `absolute_pressure` and a per-deployment atmospheric reference
+        before the ``.rsk`` file is even read, so there is nothing to
+        recompute unless a different atmospheric pressure is wanted.
+        With ``None``, it is an error for the dataset to have no
+        `sea_pressure` channel at all.
+    profiles : ProfileSettings
+        Settings for identifying individual profiles from `sea_pressure`
+        (see `ProfileSettings`). Optional; every field has a default.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     raw_channels: dict[str, RawChannelSettings] = Field(default_factory=dict)
+    atmospheric_pressure: float | None = None
+    profiles: ProfileSettings = Field(default_factory=ProfileSettings)
 
 
 class Settings(BaseSettings):
