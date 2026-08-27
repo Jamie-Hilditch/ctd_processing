@@ -4,6 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from ctd_processing.config import (
+    DeploymentSettings,
+    InstrumentSettings,
     PathsSettings,
     ProcessSettings,
     ProfileSettings,
@@ -13,6 +15,7 @@ from ctd_processing.config import (
     load_settings,
     merge_overrides,
     parse_overrides,
+    resolve_process_settings,
 )
 
 
@@ -540,3 +543,293 @@ def test_process_profiles_rejects_invalid_direction(tmp_path) -> None:
 
     with pytest.raises(ValidationError):
         load_settings(config_path)
+
+
+def test_instruments_and_deployments_default_to_empty(tmp_path) -> None:
+    """instruments/deployments default to {} when omitted."""
+    settings = load_settings(
+        set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
+        + _other_paths(tmp_path)
+    )
+    assert settings.instruments == {}
+    assert settings.deployments == {}
+
+
+def test_instruments_section_parses_from_file(tmp_path) -> None:
+    """[instruments.<serial>.process] parses into Settings.instruments."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[instruments.208532.process]\n"
+        "atmospheric_pressure = 10.1\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.instruments == {
+        "208532": InstrumentSettings(process={"atmospheric_pressure": 10.1})
+    }
+
+
+def test_deployments_section_parses_from_file(tmp_path) -> None:
+    """[deployments.<stem>.process] parses into Settings.deployments."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[deployments.243188_20260809_0304.process]\n"
+        "atmospheric_pressure = 10.1325\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.deployments == {
+        "243188_20260809_0304": DeploymentSettings(
+            process={"atmospheric_pressure": 10.1325}
+        )
+    }
+
+
+def test_instruments_rejects_unknown_key(tmp_path) -> None:
+    """An unknown key under [instruments.<serial>] fails validation."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[instruments.208532]\n"
+        "not_a_real_option = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+def test_deployments_rejects_unknown_key(tmp_path) -> None:
+    """An unknown key under [deployments.<stem>] fails validation."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[deployments.243188_20260809_0304]\n"
+        "not_a_real_option = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+def test_load_settings_rejects_invalid_instrument_override(tmp_path) -> None:
+    """A bad field inside an instrument override fails at load time."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[instruments.208532.process]\n"
+        "not_a_real_option = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+def test_load_settings_rejects_invalid_deployment_override(tmp_path) -> None:
+    """A bad field inside a deployment override fails at load time."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[deployments.243188_20260809_0304.process]\n"
+        "not_a_real_option = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+def test_instruments_override_via_set(tmp_path) -> None:
+    """--set instruments.<serial>.process.<key>=<value> works."""
+    settings = load_settings(
+        set_=[
+            f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"',
+            "instruments.208532.process.atmospheric_pressure=10.1",
+        ]
+        + _other_paths(tmp_path)
+    )
+    assert settings.instruments["208532"].process == {
+        "atmospheric_pressure": 10.1
+    }
+
+
+def test_deployments_override_via_set(tmp_path) -> None:
+    """--set deployments.<stem>.process.<key>=<value> works."""
+    settings = load_settings(
+        set_=[
+            f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"',
+            "deployments.243188_20260809_0304.process.atmospheric_pressure=10.1325",
+        ]
+        + _other_paths(tmp_path)
+    )
+    assert settings.deployments["243188_20260809_0304"].process == {
+        "atmospheric_pressure": 10.1325
+    }
+
+
+def test_resolve_process_settings_returns_project_settings_unchanged() -> None:
+    """With no matching instrument/deployment, project settings pass through."""
+    settings = Settings(
+        paths=PathsSettings(
+            rsk_directory="rsk",
+            profiles_directory="profiles",
+            binned_directory="binned",
+        ),
+        process=ProcessSettings(atmospheric_pressure=10.0),
+    )
+
+    resolved = resolve_process_settings(
+        settings, serial_number="999999", stem="unmatched"
+    )
+
+    assert resolved == settings.process
+
+
+def test_resolve_process_settings_applies_instrument_override() -> None:
+    """An instrument override merges onto the project-level settings."""
+    settings = Settings(
+        paths=PathsSettings(
+            rsk_directory="rsk",
+            profiles_directory="profiles",
+            binned_directory="binned",
+        ),
+        process=ProcessSettings(atmospheric_pressure=10.0),
+        instruments={
+            "208532": InstrumentSettings(
+                process={
+                    "raw_channels": {"sea_water_temperature": {"shift": 2}}
+                }
+            )
+        },
+    )
+
+    resolved = resolve_process_settings(settings, serial_number="208532")
+
+    assert resolved.atmospheric_pressure == 10.0
+    assert resolved.raw_channels["sea_water_temperature"] == RawChannelSettings(
+        shift=2
+    )
+
+
+def test_resolve_process_settings_applies_deployment_override() -> None:
+    """A deployment override merges onto the project-level settings."""
+    settings = Settings(
+        paths=PathsSettings(
+            rsk_directory="rsk",
+            profiles_directory="profiles",
+            binned_directory="binned",
+        ),
+        process=ProcessSettings(atmospheric_pressure=10.0),
+        deployments={
+            "243188_20260809_0304": DeploymentSettings(
+                process={"atmospheric_pressure": 10.5}
+            )
+        },
+    )
+
+    resolved = resolve_process_settings(settings, stem="243188_20260809_0304")
+
+    assert resolved.atmospheric_pressure == 10.5
+
+
+def test_resolve_process_settings_deployment_wins_over_instrument() -> None:
+    """A deployment override wins over an instrument override, same field."""
+    settings = Settings(
+        paths=PathsSettings(
+            rsk_directory="rsk",
+            profiles_directory="profiles",
+            binned_directory="binned",
+        ),
+        process=ProcessSettings(atmospheric_pressure=10.0),
+        instruments={
+            "208532": InstrumentSettings(process={"atmospheric_pressure": 10.1})
+        },
+        deployments={
+            "243188_20260809_0304": DeploymentSettings(
+                process={"atmospheric_pressure": 10.5}
+            )
+        },
+    )
+
+    resolved = resolve_process_settings(
+        settings, serial_number="208532", stem="243188_20260809_0304"
+    )
+
+    assert resolved.atmospheric_pressure == 10.5
+
+
+def test_resolve_process_settings_combines_disjoint_overrides() -> None:
+    """Instrument and deployment overrides on different fields both apply."""
+    settings = Settings(
+        paths=PathsSettings(
+            rsk_directory="rsk",
+            profiles_directory="profiles",
+            binned_directory="binned",
+        ),
+        process=ProcessSettings(atmospheric_pressure=10.0),
+        instruments={
+            "208532": InstrumentSettings(
+                process={
+                    "raw_channels": {"sea_water_temperature": {"shift": 2}}
+                }
+            )
+        },
+        deployments={
+            "243188_20260809_0304": DeploymentSettings(
+                process={"atmospheric_pressure": 10.5}
+            )
+        },
+    )
+
+    resolved = resolve_process_settings(
+        settings, serial_number="208532", stem="243188_20260809_0304"
+    )
+
+    assert resolved.atmospheric_pressure == 10.5
+    assert resolved.raw_channels["sea_water_temperature"] == RawChannelSettings(
+        shift=2
+    )

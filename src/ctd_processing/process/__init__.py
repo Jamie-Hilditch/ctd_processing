@@ -16,7 +16,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from ctd_processing.config import ProcessSettings, ProjectSettings
+from ctd_processing.config import Settings, resolve_process_settings
 from ctd_processing.process.build import build_dataset
 from ctd_processing.process.profiles import find_profiles
 from ctd_processing.process.raw_channels import process_raw_channels
@@ -31,43 +31,57 @@ __all__ = ["process_deployment", "process_deployment_files"]
 def process_deployment(
     file: Path,
     profiles_directory: Path,
-    settings: ProcessSettings,
-    project: ProjectSettings,
+    settings: Settings,
 ) -> None:
     """Process one ``.rsk`` deployment into extracted profile files.
 
-    Reads the deployment, builds a `Dataset` from it, applies configured
-    raw-channel processing (`settings.raw_channels`) to every channel,
-    ensures a `sea_pressure` channel exists (trusting one already in the
-    dataset by default, or recomputing it from `absolute_pressure` if
-    `settings.atmospheric_pressure` is set), and identifies profiles from
-    it using `settings.profiles`. Profile extraction, TEOS-10 derived
-    variables, and CF-compliant output are not yet implemented. Once the
-    `Dataset` is built, the underlying `pyrsktools.RSK` object is no
-    longer referenced and is free to be garbage collected -- every later
-    step operates purely on the `Dataset`. `project` metadata (e.g.
-    `name`) is intended to be attached to every output file's metadata
-    once implemented.
+    Reads the deployment and builds a `Dataset` from it, then resolves
+    the effective `ProcessSettings` for it -- an instrument's serial
+    number is only known once its data has actually been read (never
+    inferred from a filename), so settings resolution happens here,
+    after `build_dataset`, rather than before the file is read (see
+    :func:`ctd_processing.config.resolve_process_settings`). It then
+    applies configured raw-channel processing (`raw_channels`) to every
+    channel, ensures a `sea_pressure` channel exists (trusting one
+    already in the dataset by default, or recomputing it from
+    `absolute_pressure` if `atmospheric_pressure` is set), and identifies
+    profiles from it using `profiles`. Profile extraction, TEOS-10
+    derived variables, and CF-compliant output are not yet implemented.
+    Once the `Dataset` is built, the underlying `pyrsktools.RSK` object
+    is no longer referenced and is free to be garbage collected -- every
+    later step operates purely on the `Dataset`. `settings.project`
+    metadata (e.g. `name`) is intended to be attached to every output
+    file's metadata once implemented.
 
     Parameters
     ----------
     file : pathlib.Path
         The ``.rsk`` deployment file to process. Should be a private
         copy (see :func:`process_deployment_files`), since later steps
-        may run write-capable `pyrsktools.RSK` methods against it.
+        may run write-capable `pyrsktools.RSK` methods against it. Its
+        filename stem is used to look up a matching
+        ``settings.deployments`` override.
     profiles_directory : pathlib.Path
         Directory to write extracted profile files into.
-    settings : ProcessSettings
-        Process-specific settings, e.g. `raw_channels`, `profiles`.
-    project : ProjectSettings
-        Project metadata to attach to every output file.
+    settings : Settings
+        The project's full settings, used to resolve this deployment's
+        effective `ProcessSettings` (see
+        :func:`ctd_processing.config.resolve_process_settings`) and to
+        supply `settings.project` metadata.
     """
     logger.info("Reading deployment: %s", file)
     rsk = read_rsk(file)
-    dataset = build_dataset(rsk, file, project)
-    dataset = process_raw_channels(dataset, settings)
-    dataset = compute_sea_pressure(dataset, settings.atmospheric_pressure)
-    profiles = find_profiles(dataset, settings.profiles)
+    dataset = build_dataset(rsk, file, settings.project)
+    process_settings = resolve_process_settings(
+        settings,
+        serial_number=str(dataset.metadata["instrument_serial_number"]),
+        stem=file.stem,
+    )
+    dataset = process_raw_channels(dataset, process_settings)
+    dataset = compute_sea_pressure(
+        dataset, process_settings.atmospheric_pressure
+    )
+    profiles = find_profiles(dataset, process_settings.profiles)
     logger.info("Identified %d profile(s) in %s", len(profiles), file)
     logger.debug("Built dataset: %s", dataset)
 
@@ -95,8 +109,7 @@ def _copy_deployment(source: Path, destination: Path) -> Path:
 def process_deployment_files(
     deployment_files: list[Path],
     profiles_directory: Path,
-    settings: ProcessSettings,
-    project: ProjectSettings,
+    settings: Settings,
 ) -> None:
     """Copy deployments into a private temp directory and process concurrently.
 
@@ -115,10 +128,11 @@ def process_deployment_files(
         The ``.rsk`` deployment files to process.
     profiles_directory : pathlib.Path
         Directory to write extracted profile files into.
-    settings : ProcessSettings
-        Process-specific settings (currently none defined).
-    project : ProjectSettings
-        Project metadata to attach to every output file.
+    settings : Settings
+        The project's full settings, forwarded to :func:`process_deployment`
+        so it can resolve each deployment's effective `ProcessSettings`
+        (instrument/deployment overrides can only be resolved per file,
+        once that file's instrument serial number is known).
 
     Raises
     ------
@@ -145,9 +159,7 @@ def process_deployment_files(
                 deployment_file = future_to_file[future]
                 try:
                     copy_path = future.result()
-                    process_deployment(
-                        copy_path, profiles_directory, settings, project
-                    )
+                    process_deployment(copy_path, profiles_directory, settings)
                 except Exception as exc:
                     logger.exception(
                         "Failed to process deployment: %s", deployment_file

@@ -4,7 +4,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -243,6 +243,62 @@ class ProcessSettings(BaseModel):
     profiles: ProfileSettings = Field(default_factory=ProfileSettings)
 
 
+class InstrumentSettings(BaseModel):
+    """Per-instrument overrides of `ProcessSettings`, keyed by serial number.
+
+    An instrument's serial number is only known once a deployment's
+    ``.rsk`` file has actually been read (see
+    `ctd_processing.process.build.build_dataset`); it is never inferred
+    from a filename. `Settings.instruments` is keyed by that serial
+    number, as a string, so an override here follows a physical
+    instrument across every deployment it appears in.
+
+    Attributes
+    ----------
+    process : dict[str, Any]
+        A partial, TOML-table-shaped `ProcessSettings` override. Only the
+        fields given here are overridden; every other field falls back to
+        the project-level `Settings.process` (see
+        :func:`resolve_process_settings`). Nested tables (e.g.
+        ``raw_channels.<name>``, ``profiles``) merge field-by-field rather
+        than replacing the whole table. Not validated as `ProcessSettings`
+        until merged with the project-level settings it overrides.
+        Defaults to an empty dict, i.e. no overrides.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    process: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeploymentSettings(BaseModel):
+    """Per-deployment overrides of `ProcessSettings`, keyed by ``.rsk`` stem.
+
+    `Settings.deployments` is keyed by a deployment's ``.rsk`` filename
+    stem (i.e. the filename without its extension), e.g.
+    ``"243188_20260809_0304"`` for ``243188_20260809_0304.rsk``. These
+    overrides win over any matching `InstrumentSettings` override, which
+    in turn wins over the project-level `Settings.process` (see
+    :func:`resolve_process_settings`).
+
+    Attributes
+    ----------
+    process : dict[str, Any]
+        A partial, TOML-table-shaped `ProcessSettings` override. Only the
+        fields given here are overridden; every other field falls back to
+        the project-level `Settings.process` (and any matching
+        `InstrumentSettings`). Nested tables (e.g.
+        ``raw_channels.<name>``, ``profiles``) merge field-by-field rather
+        than replacing the whole table. Not validated as `ProcessSettings`
+        until merged with the settings it overrides. Defaults to an empty
+        dict, i.e. no overrides.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    process: dict[str, Any] = Field(default_factory=dict)
+
+
 class Settings(BaseSettings):
     """Runtime configuration for ctd_processing.
 
@@ -265,6 +321,19 @@ class Settings(BaseSettings):
     process : ProcessSettings
         Settings specific to the ``process`` command, e.g. `raw_channels`.
         Optional; every field of `ProcessSettings` has a default.
+    instruments : dict[str, InstrumentSettings]
+        Per-instrument overrides of `process`, keyed by instrument serial
+        number (see `InstrumentSettings`). Optional; defaults to an empty
+        dict, i.e. no overrides. Resolve the effective `ProcessSettings`
+        for a given instrument/deployment with
+        :func:`resolve_process_settings`.
+    deployments : dict[str, DeploymentSettings]
+        Per-deployment overrides of `process`, keyed by ``.rsk`` filename
+        stem (see `DeploymentSettings`). Optional; defaults to an empty
+        dict, i.e. no overrides. These win over any matching
+        `instruments` override. Resolve the effective `ProcessSettings`
+        for a given instrument/deployment with
+        :func:`resolve_process_settings`.
     """
 
     model_config = SettingsConfigDict(extra="forbid")
@@ -272,6 +341,8 @@ class Settings(BaseSettings):
     project: ProjectSettings = Field(default_factory=ProjectSettings)
     paths: PathsSettings
     process: ProcessSettings = Field(default_factory=ProcessSettings)
+    instruments: dict[str, InstrumentSettings] = Field(default_factory=dict)
+    deployments: dict[str, DeploymentSettings] = Field(default_factory=dict)
 
     @classmethod
     def settings_customise_sources(
@@ -411,6 +482,100 @@ def merge_overrides(data: dict[str, Any], pairs: list[str]) -> dict[str, Any]:
     return _deep_merge(data, parse_overrides(pairs))
 
 
+def resolve_process_settings(
+    settings: Settings,
+    *,
+    serial_number: str | None = None,
+    stem: str | None = None,
+) -> ProcessSettings:
+    """Resolve the effective `ProcessSettings` for an instrument/deployment.
+
+    Starts from `settings.process` and deep-merges in, in order, the
+    matching `settings.instruments` override (if `serial_number` is given
+    and present) and then the matching `settings.deployments` override
+    (if `stem` is given and present) -- so a deployment override wins
+    over an instrument override, which wins over the project-level
+    default, for any field they both set. Fields left unset at every
+    level keep their `ProcessSettings` default.
+
+    Parameters
+    ----------
+    settings : Settings
+        The loaded project settings.
+    serial_number : str or None, optional
+        Instrument serial number to look up in `settings.instruments`. If
+        ``None`` or not present in `settings.instruments`, no instrument
+        override is applied.
+    stem : str or None, optional
+        Deployment ``.rsk`` filename stem to look up in
+        `settings.deployments`. If ``None`` or not present in
+        `settings.deployments`, no deployment override is applied.
+
+    Returns
+    -------
+    ProcessSettings
+        The resolved, validated settings.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If the merged overrides do not form valid `ProcessSettings`.
+    """
+    merged = settings.process.model_dump(mode="json")
+
+    if serial_number is not None:
+        instrument = settings.instruments.get(serial_number)
+        if instrument is not None:
+            merged = _deep_merge(merged, instrument.process)
+
+    if stem is not None:
+        deployment = settings.deployments.get(stem)
+        if deployment is not None:
+            merged = _deep_merge(merged, deployment.process)
+
+    return ProcessSettings.model_validate(merged)
+
+
+def _validate_declared_overrides(settings: Settings) -> None:
+    """Eagerly validate every declared instrument/deployment override.
+
+    Each `settings.instruments`/`settings.deployments` entry is merged
+    onto `settings.process` and validated on its own -- independently of
+    every other entry -- so a typo'd or invalid override fails fast at
+    config-load time rather than only when that specific instrument or
+    deployment is later processed. This does not validate every
+    instrument x deployment combination (which one recorded which
+    deployment is only known once a ``.rsk`` file is actually read), so a
+    genuine conflict between an instrument and a deployment override can
+    still only surface at processing time.
+
+    Parameters
+    ----------
+    settings : Settings
+        The loaded project settings.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If any declared override does not form valid `ProcessSettings`,
+        annotated with a note identifying the offending
+        ``[instruments.*]``/``[deployments.*]`` table.
+    """
+    for serial_number in settings.instruments:
+        try:
+            resolve_process_settings(settings, serial_number=serial_number)
+        except ValidationError as exc:
+            exc.add_note(f"in [instruments.{serial_number}.process]")
+            raise
+
+    for stem in settings.deployments:
+        try:
+            resolve_process_settings(settings, stem=stem)
+        except ValidationError as exc:
+            exc.add_note(f"in [deployments.{stem}.process]")
+            raise
+
+
 def load_settings(
     config_path: Path | None = None, set_: list[str] | None = None
 ) -> Settings:
@@ -444,7 +609,10 @@ def load_settings(
     ValueError
         If `set_` contains a malformed override. See :func:`parse_overrides`.
     pydantic.ValidationError
-        If the merged configuration contains unknown or invalid keys.
+        If the merged configuration contains unknown or invalid keys, or
+        if any declared ``[instruments.*]``/``[deployments.*]`` override
+        does not form valid `ProcessSettings` once merged onto `process`
+        (see :func:`resolve_process_settings`).
     """
     data: dict[str, Any] = {}
     if config_path is not None:
@@ -458,6 +626,7 @@ def load_settings(
         data = merge_overrides(data, set_)
 
     settings = Settings.model_validate(data)
+    _validate_declared_overrides(settings)
 
     base_dir = config_path.parent if config_path is not None else Path.cwd()
     settings.paths.rsk_directory = base_dir / settings.paths.rsk_directory

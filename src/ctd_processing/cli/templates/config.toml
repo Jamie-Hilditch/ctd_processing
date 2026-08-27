@@ -12,6 +12,11 @@
 # relative to the directory containing this config.toml file, not the
 # current working directory.
 #
+# [instruments.<serial_number>] and [deployments.<stem>] sections (see
+# below) let you override [process] settings for one specific instrument
+# or deployment. Where more than one applies, [deployments.*] wins over
+# [instruments.*], which wins over [process].
+#
 # `process`, `bin`, and `concatenate` are still stubs pending the real
 # pyrsktools/gsw-based implementation.
 
@@ -166,3 +171,30 @@
 # since sea_pressure routinely has NaNs from upstream remove_holds
 # processing.
 # missing = "drop"
+
+# [instruments.<serial_number>] sections are optional and override
+# [process] settings for one specific instrument, identified by its
+# serial number, across every deployment it appears in. <serial_number>
+# is read from the .rsk file itself when a deployment is processed --
+# never inferred from a filename -- so it only needs to match the real
+# instrument serial number, not any particular file. Only the fields
+# given here are overridden; everything else falls back to [process]
+# above. Nested tables (raw_channels.<name>, profiles) merge field by
+# field, not as a whole table. The example below is illustrative, not
+# required.
+#
+# [instruments.208532.process]
+# atmospheric_pressure = 10.1
+#
+# [instruments.208532.process.raw_channels.sea_water_temperature]
+# shift = 2
+
+# [deployments.<stem>] sections are optional and override [process] (and
+# any matching [instruments.*]) settings for one specific deployment,
+# where <stem> is that deployment's .rsk filename without the extension,
+# e.g. "243188_20260809_0304" for 243188_20260809_0304.rsk. Merges the
+# same way as [instruments.*], and wins over it when both set the same
+# field. The example below is illustrative, not required.
+#
+# [deployments.243188_20260809_0304.process]
+# atmospheric_pressure = 10.1325

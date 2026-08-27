@@ -6,13 +6,24 @@ from pathlib import Path
 import pytest
 
 import ctd_processing.process as process_module
-from ctd_processing.config import ProcessSettings, ProjectSettings
+from ctd_processing.config import PathsSettings, ProcessSettings, Settings
 from ctd_processing.process import process_deployment_files
 
 
 def _touch(path: Path) -> Path:
     path.write_text("", encoding="utf-8")
     return path
+
+
+def _settings(tmp_path: Path) -> Settings:
+    return Settings(
+        paths=PathsSettings(
+            rsk_directory=tmp_path / "rsk",
+            profiles_directory=tmp_path / "profiles",
+            binned_directory=tmp_path / "binned",
+        ),
+        process=ProcessSettings(),
+    )
 
 
 def test_process_deployment_files_copies_and_dispatches_each_file(
@@ -27,7 +38,7 @@ def test_process_deployment_files_copies_and_dispatches_each_file(
     calls: list[Path] = []
     lock = threading.Lock()
 
-    def fake_process_deployment(file, profiles_directory, settings, project):
+    def fake_process_deployment(file, profiles_directory, settings):
         with lock:
             calls.append(file)
 
@@ -35,9 +46,7 @@ def test_process_deployment_files_copies_and_dispatches_each_file(
         process_module, "process_deployment", fake_process_deployment
     )
 
-    process_deployment_files(
-        [a, b], tmp_path / "profiles", ProcessSettings(), ProjectSettings()
-    )
+    process_deployment_files([a, b], tmp_path / "profiles", _settings(tmp_path))
 
     assert {path.name for path in calls} == {"a.rsk", "b.rsk"}
     for path in calls:
@@ -61,7 +70,7 @@ def test_process_deployment_files_continues_after_one_failure(
     calls: list[Path] = []
     lock = threading.Lock()
 
-    def fake_process_deployment(file, profiles_directory, settings, project):
+    def fake_process_deployment(file, profiles_directory, settings):
         with lock:
             calls.append(file)
         if file.name == "bad.rsk":
@@ -73,10 +82,7 @@ def test_process_deployment_files_continues_after_one_failure(
 
     with pytest.raises(ExceptionGroup) as exc_info:
         process_deployment_files(
-            [good, bad],
-            tmp_path / "profiles",
-            ProcessSettings(),
-            ProjectSettings(),
+            [good, bad], tmp_path / "profiles", _settings(tmp_path)
         )
 
     assert {path.name for path in calls} == {"good.rsk", "bad.rsk"}

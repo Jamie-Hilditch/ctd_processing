@@ -144,8 +144,7 @@ def process_command(
     process_deployment_files(
         deployment_files,
         settings.paths.profiles_directory,
-        settings.process,
-        settings.project,
+        settings,
     )
 
     listing = "\n".join(f"  {path}" for path in deployment_files)

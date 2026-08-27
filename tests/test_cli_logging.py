@@ -320,7 +320,7 @@ def test_cli_process_writes_split_log_files(
     """paths.log_file/error_log_file receive non-overlapping records."""
     import ctd_processing.process as process_module
 
-    def failing_process_deployment(file, profiles_directory, settings, project):
+    def failing_process_deployment(file, profiles_directory, settings):
         process_module.logger.info("about to fail")
         raise ValueError("boom")
 
