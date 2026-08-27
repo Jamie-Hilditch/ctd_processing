@@ -18,3 +18,27 @@ def test_read_rsk_returns_opened_rsk_with_data(
     assert isinstance(rsk, pyrsktools.RSK)
     assert rsk.data.size > 0
     assert rsk.channelNames
+
+
+@pytest.mark.requires_example_data
+def test_read_rsk_returns_opened_rsk_with_data_for_fluorometer_instrument(
+    example_rsk_path_fluorometer: Path,
+) -> None:
+    """read_rsk also works against a second, differently-configured device."""
+    rsk = read_rsk(example_rsk_path_fluorometer)
+
+    assert isinstance(rsk, pyrsktools.RSK)
+    assert rsk.data.size > 0
+    assert rsk.channelNames
+
+
+@pytest.mark.requires_example_data
+def test_read_rsk_returns_opened_rsk_with_data_for_oxygen_instrument(
+    example_rsk_path_oxygen: Path,
+) -> None:
+    """read_rsk also works against a third instrument, carrying oxygen data."""
+    rsk = read_rsk(example_rsk_path_oxygen)
+
+    assert isinstance(rsk, pyrsktools.RSK)
+    assert rsk.data.size > 0
+    assert rsk.channelNames

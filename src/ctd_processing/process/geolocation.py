@@ -92,13 +92,13 @@ def attach_geolocation(
     ----------
     dataset : Dataset
         One already-extracted profile `Dataset` (see
-        `ctd_processing.process.save.save_profiles`). Mutated in place.
+        `ctd_processing.process.process_profile`). Mutated in place.
     settings : GeolocationSettings
         Configures which position source to use.
     external_dataset : xarray.Dataset or None
         The already-opened external position dataset, when
         `settings.external_dataset_path` is set; otherwise ``None``. The
-        caller (`ctd_processing.process.save.save_profiles`) opens this
+        caller (`ctd_processing.process.process_deployment`) opens this
         once per deployment rather than once per profile.
 
     Returns

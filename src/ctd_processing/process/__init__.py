@@ -5,9 +5,9 @@ is the entry point that :mod:`ctd_processing.cli.process` calls with the
 full batch of resolved ``.rsk`` deployment files; :func:`process_deployment`
 is the per-deployment worker it dispatches to. The rest of this package
 holds the supporting implementation (reading deployments, identifying and
-extracting profiles, computing TEOS-10 derived variables with `gsw`, and
-writing CF-compliant output) that :func:`process_deployment` will grow to
-use.
+extracting profiles, attaching a position and computing TEOS-10 derived
+variables with `gsw`, and writing CF-compliant output) that
+:func:`process_deployment` uses.
 """
 
 import logging
@@ -16,18 +16,72 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from ctd_processing.config import Settings, resolve_process_settings
+import xarray as xr
+
+from ctd_processing.config import (
+    DerivedVariablesSettings,
+    DespikeSettings,
+    GeolocationSettings,
+    Settings,
+    resolve_despike_settings,
+    resolve_process_settings,
+)
+from ctd_processing.logging_utils import log_verbose
 from ctd_processing.process.build import build_dataset
 from ctd_processing.process.ct_lag import process_ct_lag
+from ctd_processing.process.dataset import Dataset
+from ctd_processing.process.derived_variables import compute_derived_variables
+from ctd_processing.process.geolocation import attach_geolocation
 from ctd_processing.process.profiles import find_profiles
 from ctd_processing.process.raw_channels import process_raw_channels
 from ctd_processing.process.read import read_rsk
-from ctd_processing.process.save import save_profiles
+from ctd_processing.process.save import save_profile
 from ctd_processing.process.sea_pressure import compute_sea_pressure
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["process_deployment", "process_deployment_files"]
+__all__ = ["process_deployment", "process_deployment_files", "process_profile"]
+
+
+def process_profile(
+    dataset: Dataset,
+    geolocation: GeolocationSettings,
+    external_dataset: xr.Dataset | None,
+    derived_variables: DerivedVariablesSettings,
+    despike: dict[str, DespikeSettings] | None = None,
+) -> Dataset:
+    """Attach a position and compute derived variables for one profile.
+
+    Attaches `dataset`'s canonical time and position via
+    `ctd_processing.process.geolocation.attach_geolocation`, then computes
+    and attaches TEOS-10 derived variables via
+    `ctd_processing.process.derived_variables.compute_derived_variables` --
+    which needs the position `attach_geolocation` just attached, so the two
+    must run in this order.
+
+    Parameters
+    ----------
+    dataset : Dataset
+        One profile's `Dataset`, already extracted from the full
+        deployment via `Dataset.subset`. Mutated in place.
+    geolocation : GeolocationSettings
+        Forwarded to `attach_geolocation`.
+    external_dataset : xarray.Dataset or None
+        Forwarded to `attach_geolocation`.
+    derived_variables : DerivedVariablesSettings
+        Forwarded to `compute_derived_variables`.
+    despike : dict[str, DespikeSettings] or None, optional
+        Forwarded to `compute_derived_variables`. Optional; defaults to
+        ``None``, meaning no derived quantity is despiked.
+
+    Returns
+    -------
+    Dataset
+        `dataset` itself (not a copy).
+    """
+    dataset = attach_geolocation(dataset, geolocation, external_dataset)
+    dataset = compute_derived_variables(dataset, derived_variables, despike)
+    return dataset
 
 
 def process_deployment(
@@ -42,18 +96,27 @@ def process_deployment(
     number is only known once its data has actually been read (never
     inferred from a filename), so settings resolution happens here,
     after `build_dataset`, rather than before the file is read (see
-    :func:`ctd_processing.config.resolve_process_settings`). It then
-    applies configured raw-channel processing (`raw_channels`) to every
-    channel, ensures a `sea_pressure` channel exists (trusting one
+    :func:`ctd_processing.config.resolve_process_settings`). It also
+    resolves `process_settings.despike`/`despike_channels` into a flat,
+    per-channel mapping once (see
+    :func:`ctd_processing.config.resolve_despike_settings`), reused for
+    the rest of the deployment. It then applies configured raw-channel
+    processing (`raw_channels`) and despiking to every channel, ensures a
+    `sea_pressure` channel exists (trusting one
     already in the dataset by default, or recomputing it from
     `absolute_pressure` if `atmospheric_pressure` is set), identifies
     profiles from it using `profiles`, and, if configured (`ct_lag`),
     calculates and applies a deployment-wide conductivity/temperature lag
-    correction. Finally, every identified profile is extracted from the
-    full-deployment `Dataset` and written into `profiles_directory` in
+    correction. Finally, this loops over every identified profile itself:
+    each is extracted from the full-deployment `Dataset` (`Dataset.subset`),
+    passed through :func:`process_profile` (attaching a position,
+    computing TEOS-10 derived variables, and despiking configured ones),
+    and written into `profiles_directory` in
     `process_settings.profile_format` (see
-    :func:`ctd_processing.process.save.save_profiles`). TEOS-10 derived
-    variables are not yet implemented.
+    :func:`ctd_processing.process.save.save_profile`). If
+    `process_settings.geolocation.external_dataset_path` is set, that
+    dataset is opened once for the whole loop and reused across every
+    profile, rather than once per profile.
     Once the `Dataset` is built, the underlying `pyrsktools.RSK` object
     is no longer referenced and is free to be garbage collected -- every
     later step operates purely on the `Dataset`.
@@ -82,20 +145,51 @@ def process_deployment(
         serial_number=str(dataset.metadata["instrument_serial_number"]),
         stem=file.stem,
     )
-    dataset = process_raw_channels(dataset, process_settings)
+    despike = resolve_despike_settings(process_settings)
+    dataset = process_raw_channels(dataset, process_settings, despike)
     dataset = compute_sea_pressure(
         dataset, process_settings.atmospheric_pressure
     )
     profiles = find_profiles(dataset, process_settings.profiles)
     logger.info("Identified %d profile(s) in %s", len(profiles), file)
     dataset = process_ct_lag(dataset, profiles, process_settings.ct_lag)
-    profile_paths = save_profiles(
-        dataset,
-        profiles,
-        profiles_directory,
-        process_settings.profile_format,
-        process_settings.geolocation,
-    )
+
+    total = len(profiles)
+    geolocation = process_settings.geolocation
+    external_dataset = None
+    if geolocation.external_dataset_path is not None:
+        external_dataset = xr.open_dataset(geolocation.external_dataset_path)
+    profile_paths = []
+    try:
+        for index, profile in enumerate(profiles):
+            description = (
+                f"extracted profile {index + 1} of {total} "
+                f"(samples {profile.down_start}:{profile.up_end})"
+            )
+            profile_dataset = dataset.subset(
+                slice(profile.down_start, profile.up_end), description
+            )
+            log_verbose(logger, description)
+            profile_dataset = process_profile(
+                profile_dataset,
+                geolocation,
+                external_dataset,
+                process_settings.derived_variables,
+                despike,
+            )
+            path = save_profile(
+                dataset,
+                profile_dataset,
+                index,
+                total,
+                profiles_directory,
+                process_settings.profile_format,
+            )
+            profile_paths.append(path)
+    finally:
+        if external_dataset is not None:
+            external_dataset.close()
+
     logger.info(
         "Wrote %d profile file(s) to %s", len(profile_paths), profiles_directory
     )

@@ -8,7 +8,7 @@ import xarray as xr
 
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
-from ctd_processing.process.save_netcdf import write_netcdf
+from ctd_processing.process.save_netcdf import read_netcdf, write_netcdf
 
 
 def _dataset() -> Dataset:
@@ -156,3 +156,75 @@ def test_write_netcdf_creates_missing_parent_directory(tmp_path: Path) -> None:
     path = write_netcdf(dataset, tmp_path / "nested" / "profile.nc")
 
     assert path.exists()
+
+
+def test_read_netcdf_round_trips_channel_data_and_metadata(
+    tmp_path: Path,
+) -> None:
+    """A channel's data, metadata, and history round-trip via read_netcdf."""
+    dataset = _dataset()
+    path = write_netcdf(dataset, tmp_path / "profile.nc")
+
+    loaded = read_netcdf(path)
+
+    temperature = loaded.channels["sea_water_temperature"]
+    np.testing.assert_array_equal(
+        temperature.data,
+        dataset.channels["sea_water_temperature"].data,
+        strict=False,
+    )
+    assert (
+        temperature.metadata
+        == dataset.channels["sea_water_temperature"].metadata
+    )
+    assert (
+        temperature.history == dataset.channels["sea_water_temperature"].history
+    )
+
+    pressure = loaded.channels["sea_pressure"]
+    assert pressure.metadata == dataset.channels["sea_pressure"].metadata
+    assert pressure.history == []
+
+
+def test_read_netcdf_round_trips_time_and_adds_cf_defaults(
+    tmp_path: Path,
+) -> None:
+    """Time round-trips exactly, carrying the CF defaults write_netcdf adds."""
+    dataset = _dataset()
+    path = write_netcdf(dataset, tmp_path / "profile.nc")
+
+    loaded = read_netcdf(path)
+
+    assert np.array_equal(
+        loaded.time.data.astype("datetime64[ms]"), dataset.time.data
+    )
+    assert loaded.time.metadata["standard_name"] == "time"
+    assert loaded.time.metadata["axis"] == "T"
+    assert loaded.time.history == []
+
+
+def test_read_netcdf_round_trips_dataset_metadata_and_history(
+    tmp_path: Path,
+) -> None:
+    """Global attrs and history decode back to dataset.metadata/history."""
+    dataset = _dataset()
+    path = write_netcdf(dataset, tmp_path / "profile.nc")
+
+    loaded = read_netcdf(path)
+
+    assert loaded.metadata["source_file"] == "example.rsk"
+    assert loaded.metadata["instrument_serial_number"] == 208532
+    assert loaded.metadata["deployment_start_time"] == "2026-08-09T03:00:00"
+    assert "deployment_comment" not in loaded.metadata
+    assert loaded.history == dataset.history
+
+
+def test_read_netcdf_does_not_inject_extra_history(tmp_path: Path) -> None:
+    """Loading channels bypasses add_channel, so history isn't padded out."""
+    dataset = _dataset()
+    path = write_netcdf(dataset, tmp_path / "profile.nc")
+
+    loaded = read_netcdf(path)
+
+    assert loaded.history == dataset.history
+    assert list(loaded.channels) == list(dataset.channels)

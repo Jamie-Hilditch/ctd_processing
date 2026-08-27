@@ -8,7 +8,7 @@ import pyarrow.parquet as pq
 
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
-from ctd_processing.process.save_parquet import write_parquet
+from ctd_processing.process.save_parquet import read_parquet, write_parquet
 
 
 def _dataset() -> Dataset:
@@ -139,3 +139,61 @@ def test_write_parquet_creates_missing_parent_directory(tmp_path: Path) -> None:
     path = write_parquet(dataset, tmp_path / "nested" / "profile.parquet")
 
     assert path.exists()
+
+
+def test_read_parquet_round_trips_channel_data_metadata_and_history(
+    tmp_path: Path,
+) -> None:
+    """A channel's data, metadata, and history round-trip via read_parquet."""
+    dataset = _dataset()
+    path = write_parquet(dataset, tmp_path / "profile.parquet")
+
+    loaded = read_parquet(path)
+
+    temperature = loaded.channels["sea_water_temperature"]
+    np.testing.assert_array_equal(
+        temperature.data, dataset.channels["sea_water_temperature"].data
+    )
+    assert (
+        temperature.metadata
+        == dataset.channels["sea_water_temperature"].metadata
+    )
+    assert (
+        temperature.history == dataset.channels["sea_water_temperature"].history
+    )
+
+
+def test_read_parquet_round_trips_time_exactly(tmp_path: Path) -> None:
+    """The time column round-trips to the exact same datetime64[ms] values."""
+    dataset = _dataset()
+    path = write_parquet(dataset, tmp_path / "profile.parquet")
+
+    loaded = read_parquet(path)
+
+    assert np.array_equal(loaded.time.data, dataset.time.data)
+    assert loaded.time.metadata == dataset.time.metadata
+    assert loaded.time.history == dataset.time.history
+
+
+def test_read_parquet_round_trips_dataset_metadata_and_history(
+    tmp_path: Path,
+) -> None:
+    """Schema metadata/history decode back to dataset.metadata/history."""
+    dataset = _dataset()
+    path = write_parquet(dataset, tmp_path / "profile.parquet")
+
+    loaded = read_parquet(path)
+
+    assert loaded.metadata == dataset.metadata
+    assert loaded.history == dataset.history
+
+
+def test_read_parquet_does_not_inject_extra_history(tmp_path: Path) -> None:
+    """Loading channels bypasses add_channel, so history isn't padded out."""
+    dataset = _dataset()
+    path = write_parquet(dataset, tmp_path / "profile.parquet")
+
+    loaded = read_parquet(path)
+
+    assert loaded.history == dataset.history
+    assert list(loaded.channels) == list(dataset.channels)

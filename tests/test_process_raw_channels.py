@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from ctd_processing.config import (
+    DespikeSettings,
     GeolocationSettings,
     ProcessSettings,
     RawChannelSettings,
@@ -377,6 +378,42 @@ def test_process_raw_channel_mutates_in_place() -> None:
     assert result.data is original_data
 
 
+def test_process_raw_channel_despike_is_a_noop_by_default() -> None:
+    """With no despike argument, a spike is left untouched."""
+    channel = Channel(data=np.array([1.0, 1.0, 1.0, 50.0, 1.0]))
+
+    result = process_raw_channel(
+        channel, RawChannelSettings(remove_holds=False)
+    )
+
+    assert result.data[3] == 50.0
+    assert result.history == []
+
+
+def test_process_raw_channel_applies_despike_last() -> None:
+    """Despiking runs after remove_holds/shift/offset, on the corrected signal.
+
+    remove_holds+shift(1) turns [1, 1, 2, 3, 50, 3, 3] into
+    [nan, 1, nan, 2, 3, 50, 3] -- the spike ends up at (post-shift) index
+    5. Despiking must find it there, proving it ran on the already
+    remove_holds+shift-corrected array, not the raw input.
+    """
+    channel = Channel(data=np.array([1.0, 1.0, 2.0, 3.0, 50.0, 3.0, 3.0]))
+
+    result = process_raw_channel(
+        channel,
+        RawChannelSettings(remove_holds=True, shift=1),
+        DespikeSettings(threshold=2.0, window_length=3),
+    )
+
+    assert np.isnan(result.data[5])
+    assert result.history == [
+        "removed 2 zero-order hold value(s)",
+        "shifted by 1 sample(s)",
+        "despiked 1 point(s)",
+    ]
+
+
 def _dataset_with_channels() -> Dataset:
     dataset = Dataset(time=Channel(data=np.array([0.0, 1.0, 2.0])))
     dataset.add_channel(
@@ -443,3 +480,37 @@ def test_process_raw_channels_returns_same_dataset() -> None:
     )
 
     assert result is dataset
+
+
+def test_process_raw_channels_despikes_only_configured_channels() -> None:
+    """Only the channel named in `despike` is despiked."""
+    dataset = Dataset(time=Channel(data=np.array([0.0, 1.0, 2.0, 3.0, 4.0])))
+    dataset.add_channel(
+        "sea_water_temperature",
+        Channel(data=np.array([1.0, 1.0, 1.0, 50.0, 1.0])),
+    )
+    dataset.add_channel(
+        "sea_water_electrical_conductivity",
+        Channel(data=np.array([1.0, 1.0, 1.0, 50.0, 1.0])),
+    )
+
+    result = process_raw_channels(
+        dataset,
+        ProcessSettings(
+            geolocation=_GEOLOCATION,
+            raw_channels={
+                "sea_water_temperature": RawChannelSettings(remove_holds=False),
+                "sea_water_electrical_conductivity": RawChannelSettings(
+                    remove_holds=False
+                ),
+            },
+        ),
+        despike={
+            "sea_water_temperature": DespikeSettings(
+                threshold=2.0, window_length=3
+            )
+        },
+    )
+
+    assert np.isnan(result.channels["sea_water_temperature"].data[3])
+    assert result.channels["sea_water_electrical_conductivity"].data[3] == 50.0

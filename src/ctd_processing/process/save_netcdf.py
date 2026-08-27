@@ -1,4 +1,4 @@
-"""Write a `Dataset` to a CF-compliant netCDF file via xarray + h5netcdf.
+"""Read/write a `Dataset` to a CF-compliant netCDF file via xarray + h5netcdf.
 
 Compression uses h5netcdf's bundled zlib (with the shuffle filter) rather
 than an HDF5 filter plugin such as blosc/zstd, so files stay readable by any
@@ -18,7 +18,7 @@ from ctd_processing.process.dataset import Dataset
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["write_netcdf"]
+__all__ = ["read_netcdf", "write_netcdf"]
 
 
 def _sanitize_attr(value: Any) -> Any:
@@ -99,12 +99,92 @@ def _channel_attrs(channel: Channel) -> dict[str, Any]:
     return attrs
 
 
+def _pop_history(attrs: dict[str, Any]) -> list[str]:
+    """Pop and split a netCDF ``history`` attribute back into a list.
+
+    Reverses the ``"; ".join(...)`` done by `_global_attrs`/
+    `_channel_attrs`: the inverse operation for a `Dataset`/`Channel`
+    that had no history at all (an absent or empty ``history`` attribute)
+    is an empty list, not ``[""]``.
+
+    Parameters
+    ----------
+    attrs : dict[str, Any]
+        A variable's or dataset's attributes, as read back from a netCDF
+        file. Mutated in place: ``"history"`` is removed if present.
+
+    Returns
+    -------
+    list[str]
+        `attrs["history"]` split on ``"; "``, or ``[]`` if `attrs` has no
+        ``history`` key or its value is the empty string.
+    """
+    history = attrs.pop("history", "")
+    return history.split("; ") if history else []
+
+
+def read_netcdf(path: Path) -> Dataset:
+    """Read a `Dataset` back from a netCDF file written by `write_netcdf`.
+
+    Reverses `write_netcdf`: the ``time`` coordinate becomes `Dataset.time`,
+    every other data variable becomes a `Channel` keyed by its variable
+    name, and each variable's/the file's attributes become that
+    `Channel`'s/the `Dataset`'s `metadata` and `history` (see
+    `_pop_history`). Channels are attached directly to
+    `Dataset.channels`, bypassing `Dataset.add_channel`, so that loading a
+    file does not itself inject extra "added channel" entries into
+    `history` beyond what `write_netcdf` actually wrote -- the same
+    approach `Dataset.subset` uses to reconstruct a `Dataset` with
+    pre-existing channels.
+
+    `None`-valued metadata and the original Python type of
+    `datetime`-like metadata values are not recoverable (see
+    `_sanitize_attr`): this reproduces exactly what `write_netcdf` wrote
+    to `path`, not necessarily the `Dataset` originally passed to it.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Path to a netCDF file written by `write_netcdf`.
+
+    Returns
+    -------
+    Dataset
+        The reconstructed dataset.
+    """
+    with xr.open_dataset(path, engine="h5netcdf") as xr_dataset:
+        time_attrs = dict(xr_dataset["time"].attrs)
+        time = Channel(
+            data=xr_dataset["time"].to_numpy(),
+            metadata=time_attrs,
+            history=_pop_history(time_attrs),
+        )
+
+        global_attrs = dict(xr_dataset.attrs)
+        dataset = Dataset(
+            time=time,
+            metadata=global_attrs,
+            history=_pop_history(global_attrs),
+        )
+
+        for name, variable in xr_dataset.data_vars.items():
+            channel_attrs = dict(variable.attrs)
+            dataset.channels[str(name)] = Channel(
+                data=variable.to_numpy(),
+                metadata=channel_attrs,
+                history=_pop_history(channel_attrs),
+            )
+
+    log_verbose(logger, "read netCDF profile file: %s", path)
+    return dataset
+
+
 def write_netcdf(dataset: Dataset, path: Path) -> Path:
     """Write `dataset` to `path` as a CF-compliant netCDF file.
 
-    Every channel in `dataset.channels` other than `time` becomes a data
-    variable along a single ``time`` dimension; `time` itself becomes the
-    ``time`` coordinate. Each channel's `Channel.metadata` (already
+    Every channel in `dataset.channels` becomes a data variable along a
+    single ``time`` dimension; `dataset.time` itself becomes the ``time``
+    coordinate. Each channel's `Channel.metadata` (already
     CF-shaped) becomes that variable's attributes, plus a ``history``
     attribute from `Channel.history` when non-empty -- attached to the
     variable it actually describes, not merged into one global blob.
@@ -134,8 +214,6 @@ def write_netcdf(dataset: Dataset, path: Path) -> Path:
     data_vars = {}
     encoding = {}
     for name, channel in dataset.channels.items():
-        if name == "time":
-            continue
         data_vars[name] = xr.DataArray(
             channel.data, dims=("time",), attrs=_channel_attrs(channel)
         )

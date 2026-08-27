@@ -6,14 +6,12 @@ import numpy as np
 import pytest
 
 import ctd_processing.process.save as save_module
-from ctd_processing.config import GeolocationSettings
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
-from ctd_processing.process.profiles import Profile
-from ctd_processing.process.save import profile_filename, save_profiles
-
-_GEOLOCATION = GeolocationSettings(
-    reference_latitude=0.0, reference_longitude=0.0
+from ctd_processing.process.save import (
+    load_profile,
+    profile_filename,
+    save_profile,
 )
 
 
@@ -94,171 +92,118 @@ def _stub_writers(monkeypatch: pytest.MonkeyPatch) -> dict:
     return calls
 
 
-def _profiles(n: int) -> list[Profile]:
-    """Two disjoint profiles spanning the first and second halves of `n`."""
-    half = n // 2
-    return [
-        Profile(down_start=0, down_end=half, up_start=half, up_end=half),
-        Profile(down_start=half, down_end=n, up_start=n, up_end=n),
-    ]
-
-
-def test_save_profiles_dispatches_to_parquet_writer(
+def test_save_profile_dispatches_to_parquet_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """format="parquet" calls write_parquet, not write_netcdf."""
     calls = _stub_writers(monkeypatch)
     dataset = _dataset(10)
-    profiles = _profiles(10)
+    profile_dataset = dataset.subset(slice(0, 5), "test subset")
 
-    paths = save_profiles(dataset, profiles, tmp_path, "parquet", _GEOLOCATION)
+    path = save_profile(dataset, profile_dataset, 0, 2, tmp_path, "parquet")
 
-    assert len(paths) == 2
-    assert len(calls["parquet"]) == 2
+    assert len(calls["parquet"]) == 1
     assert not calls["netcdf"]
-    assert all(path.suffix == ".parquet" for path in paths)
+    assert path.suffix == ".parquet"
 
 
-def test_save_profiles_dispatches_to_netcdf_writer(
+def test_save_profile_dispatches_to_netcdf_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """format="netcdf" calls write_netcdf, not write_parquet."""
     calls = _stub_writers(monkeypatch)
     dataset = _dataset(10)
-    profiles = _profiles(10)
+    profile_dataset = dataset.subset(slice(0, 5), "test subset")
 
-    paths = save_profiles(dataset, profiles, tmp_path, "netcdf", _GEOLOCATION)
+    path = save_profile(dataset, profile_dataset, 0, 2, tmp_path, "netcdf")
 
-    assert len(paths) == 2
-    assert len(calls["netcdf"]) == 2
+    assert len(calls["netcdf"]) == 1
     assert not calls["parquet"]
-    assert all(path.suffix == ".nc" for path in paths)
+    assert path.suffix == ".nc"
 
 
-def test_save_profiles_extracts_expected_span(
+def test_save_profile_passes_profile_dataset_to_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Each profile's extracted Dataset spans down_start:up_end of `dataset`."""
+    """The writer is called with the given profile_dataset, unmodified."""
     calls = _stub_writers(monkeypatch)
     dataset = _dataset(10)
-    profiles = _profiles(10)
+    profile_dataset = dataset.subset(slice(0, 5), "test subset")
 
-    save_profiles(dataset, profiles, tmp_path, "parquet", _GEOLOCATION)
+    save_profile(dataset, profile_dataset, 0, 2, tmp_path, "parquet")
 
-    first_dataset, _ = calls["parquet"][0]
-    second_dataset, _ = calls["parquet"][1]
-    assert first_dataset.length == 5
-    assert second_dataset.length == 5
-    np.testing.assert_array_equal(
-        first_dataset.time.data, dataset.time.data[0:5]
-    )
-    np.testing.assert_array_equal(
-        second_dataset.time.data, dataset.time.data[5:10]
-    )
+    written_dataset, _ = calls["parquet"][0]
+    assert written_dataset is profile_dataset
 
 
-def test_save_profiles_creates_missing_directory(
+def test_save_profile_creates_missing_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """save_profiles creates `directory` if it doesn't already exist."""
+    """save_profile creates `directory` if it doesn't already exist."""
     _stub_writers(monkeypatch)
     dataset = _dataset(10)
-    profiles = _profiles(10)
+    profile_dataset = dataset.subset(slice(0, 5), "test subset")
     directory = tmp_path / "profiles" / "nested"
 
-    save_profiles(dataset, profiles, directory, "parquet", _GEOLOCATION)
+    save_profile(dataset, profile_dataset, 0, 1, directory, "parquet")
 
     assert directory.is_dir()
 
 
-def test_save_profiles_returns_paths_under_directory(
+def test_save_profile_returns_path_under_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every returned path is inside `directory`."""
+    """The returned path is inside `directory`."""
     _stub_writers(monkeypatch)
     dataset = _dataset(10)
-    profiles = _profiles(10)
+    profile_dataset = dataset.subset(slice(0, 5), "test subset")
 
-    paths = save_profiles(dataset, profiles, tmp_path, "parquet", _GEOLOCATION)
+    path = save_profile(dataset, profile_dataset, 0, 1, tmp_path, "parquet")
 
-    assert all(path.parent == tmp_path for path in paths)
+    assert path.parent == tmp_path
 
 
-def _stub_attach_geolocation(monkeypatch: pytest.MonkeyPatch) -> list:
-    """Replace attach_geolocation with a call-recording, pass-through stub."""
-    calls: list = []
-
-    def fake_attach_geolocation(dataset, settings, external_dataset):
-        calls.append((dataset, settings, external_dataset))
-        return dataset
-
+def test_load_profile_dispatches_to_read_netcdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A .nc path is loaded via read_netcdf, not read_parquet."""
+    sentinel = _dataset()
+    calls: list[Path] = []
     monkeypatch.setattr(
-        save_module, "attach_geolocation", fake_attach_geolocation
+        save_module,
+        "read_netcdf",
+        lambda path: (calls.append(path), sentinel)[1],
     )
-    return calls
+
+    path = tmp_path / "profile.nc"
+    result = load_profile(path)
+
+    assert result is sentinel
+    assert calls == [path]
 
 
-def test_save_profiles_calls_attach_geolocation_per_profile(
+def test_load_profile_dispatches_to_read_parquet(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """attach_geolocation is called once per profile, after subset."""
-    _stub_writers(monkeypatch)
-    calls = _stub_attach_geolocation(monkeypatch)
-    dataset = _dataset(10)
-    profiles = _profiles(10)
-
-    save_profiles(dataset, profiles, tmp_path, "parquet", _GEOLOCATION)
-
-    assert len(calls) == 2
-    for profile_dataset, settings, external_dataset in calls:
-        assert profile_dataset.length == 5
-        assert settings is _GEOLOCATION
-        assert external_dataset is None
-
-
-def test_save_profiles_opens_external_dataset_once_per_call(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The external dataset is opened once per call, not once per profile."""
-    _stub_writers(monkeypatch)
-    _stub_attach_geolocation(monkeypatch)
-    open_calls: list = []
-    close_calls: list = []
-
-    class _FakeExternalDataset:
-        def close(self) -> None:
-            close_calls.append(1)
-
-    def fake_open_dataset(path):
-        open_calls.append(path)
-        return _FakeExternalDataset()
-
-    monkeypatch.setattr(save_module.xr, "open_dataset", fake_open_dataset)
-    dataset = _dataset(10)
-    profiles = _profiles(10)
-    geolocation = GeolocationSettings(external_dataset_path="gps.nc")
-
-    save_profiles(dataset, profiles, tmp_path, "parquet", geolocation)
-
-    assert len(open_calls) == 1
-    assert len(close_calls) == 1
-
-
-def test_save_profiles_does_not_open_external_dataset_for_reference_position(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """No external dataset is opened when a reference position is configured."""
-    _stub_writers(monkeypatch)
-    _stub_attach_geolocation(monkeypatch)
-    open_calls: list = []
+    """A .parquet path is loaded via read_parquet, not read_netcdf."""
+    sentinel = _dataset()
+    calls: list[Path] = []
     monkeypatch.setattr(
-        save_module.xr,
-        "open_dataset",
-        lambda path: open_calls.append(path),
+        save_module,
+        "read_parquet",
+        lambda path: (calls.append(path), sentinel)[1],
     )
-    dataset = _dataset(10)
-    profiles = _profiles(10)
 
-    save_profiles(dataset, profiles, tmp_path, "parquet", _GEOLOCATION)
+    path = tmp_path / "profile.parquet"
+    result = load_profile(path)
 
-    assert open_calls == []
+    assert result is sentinel
+    assert calls == [path]
+
+
+def test_load_profile_rejects_unrecognized_extension(tmp_path: Path) -> None:
+    """An unrecognized extension raises ValueError rather than guessing."""
+    path = tmp_path / "profile.csv"
+
+    with pytest.raises(ValueError, match=r"\.csv"):
+        load_profile(path)

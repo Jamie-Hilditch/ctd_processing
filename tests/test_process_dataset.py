@@ -12,12 +12,12 @@ def _time_channel(values: list[float]) -> Channel:
 
 
 def test_dataset_seeds_channels_and_length_from_time() -> None:
-    """Constructing with just `time` populates channels and length."""
+    """Constructing with just `time` sets length; channels starts empty."""
     time = _time_channel([0.0, 1.0, 2.0])
 
     dataset = Dataset(time=time)
 
-    assert dataset.channels == {"time": time}
+    assert dataset.channels == {}
     assert dataset.length == 3
     assert dataset.metadata == {}
     assert dataset.history == []
@@ -84,6 +84,11 @@ def test_add_channel_rejects_duplicate_name() -> None:
             "temperature", Channel(data=np.array([4.0, 5.0, 6.0]))
         )
 
+
+def test_add_channel_rejects_reserved_time_name() -> None:
+    """'time' is reserved for Dataset.time; add_channel rejects it."""
+    dataset = Dataset(time=_time_channel([0.0, 1.0, 2.0]))
+
     with pytest.raises(ValueError, match="time"):
         dataset.add_channel("time", Channel(data=np.array([1.0, 2.0, 3.0])))
 
@@ -117,11 +122,11 @@ def test_remove_channel_missing_name_raises_keyerror() -> None:
         dataset.remove_channel("does_not_exist")
 
 
-def test_remove_channel_time_raises_valueerror() -> None:
-    """Removing the 'time' channel is rejected."""
+def test_remove_channel_time_raises_keyerror() -> None:
+    """'time' was never in `channels`, so removing it raises KeyError."""
     dataset = Dataset(time=_time_channel([0.0, 1.0]))
 
-    with pytest.raises(ValueError, match="time"):
+    with pytest.raises(KeyError):
         dataset.remove_channel("time")
 
 

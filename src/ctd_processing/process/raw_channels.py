@@ -10,11 +10,16 @@ import numba
 import numpy as np
 import numpy.typing as npt
 
-from ctd_processing.config import ProcessSettings, RawChannelSettings
+from ctd_processing.config import (
+    DespikeSettings,
+    ProcessSettings,
+    RawChannelSettings,
+)
 from ctd_processing.logging_utils import log_verbose
 from ctd_processing.process._shift import shift_inplace
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
+from ctd_processing.process.despike import despike_channel
 
 logger = logging.getLogger(__name__)
 
@@ -193,14 +198,17 @@ def add_offset(channel: Channel, offset: float) -> Channel:
 
 
 def process_raw_channel(
-    channel: Channel, settings: RawChannelSettings
+    channel: Channel,
+    settings: RawChannelSettings,
+    despike: DespikeSettings | None = None,
 ) -> Channel:
     """Apply configured raw-channel processing steps to `channel`, in place.
 
     Steps run in a fixed order: `remove_holds` (if enabled), then
     `shift_time` (if `settings.shift` is set), then `add_offset` (if
-    `settings.offset` is set) -- matching `RawChannelSettings`' documented
-    step ordering.
+    `settings.offset` is set), then despiking (if `despike` is given) --
+    matching `RawChannelSettings`' documented step ordering, with
+    despiking last so it sees the fully-corrected signal.
 
     Parameters
     ----------
@@ -209,6 +217,10 @@ def process_raw_channel(
         operation.
     settings : RawChannelSettings
         Which steps to apply and their parameters.
+    despike : DespikeSettings or None, optional
+        If given, `ctd_processing.process.despike.despike_channel` is
+        applied to `channel` as the last step. Optional; defaults to
+        ``None``, meaning no despiking.
 
     Returns
     -------
@@ -221,19 +233,23 @@ def process_raw_channel(
         shift_time(channel, settings.shift)
     if settings.offset is not None:
         add_offset(channel, settings.offset)
+    if despike is not None:
+        despike_channel(channel, despike)
     return channel
 
 
 def process_raw_channels(
-    dataset: Dataset, settings: ProcessSettings
+    dataset: Dataset,
+    settings: ProcessSettings,
+    despike: dict[str, DespikeSettings] | None = None,
 ) -> Dataset:
     """Apply configured per-channel processing to every raw channel.
 
     Looks up each channel's `RawChannelSettings` by its name in
     `dataset.channels` (the same key `settings.raw_channels` is keyed
     by); a channel with no matching entry uses `RawChannelSettings()`
-    defaults. `"time"` is skipped -- it isn't a raw measurement channel
-    this config applies to.
+    defaults. `time` is never in `dataset.channels` (see `Dataset.time`),
+    so it's never processed here.
 
     This function only depends on `Dataset`/`ProcessSettings`, not on how
     `dataset` was built -- it can run at any point after the dataset
@@ -242,21 +258,25 @@ def process_raw_channels(
     Parameters
     ----------
     dataset : Dataset
-        The dataset to process. Every non-``"time"`` channel is mutated
-        in place via `process_raw_channel`.
+        The dataset to process. Every channel in `dataset.channels` is
+        mutated in place via `process_raw_channel`.
     settings : ProcessSettings
         Settings providing `raw_channels`.
+    despike : dict[str, DespikeSettings] or None, optional
+        Resolved despike settings, keyed by channel name (see
+        `ctd_processing.config.resolve_despike_settings`). A channel with
+        no matching entry is not despiked. Optional; defaults to
+        ``None``, meaning no channel is despiked.
 
     Returns
     -------
     Dataset
         `dataset` itself (not a copy).
     """
+    despike = despike or {}
     for name, channel in dataset.channels.items():
-        if name == "time":
-            continue
         raw_channel_settings = settings.raw_channels.get(
             name, RawChannelSettings()
         )
-        process_raw_channel(channel, raw_channel_settings)
+        process_raw_channel(channel, raw_channel_settings, despike.get(name))
     return dataset

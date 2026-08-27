@@ -95,13 +95,82 @@ def test_build_dataset_covers_every_data_channel(
 
     source_channel_names = {
         channel.metadata["source_channel_name"]
-        for name, channel in dataset.channels.items()
-        if name != "time"
+        for channel in dataset.channels.values()
     }
     expected = {
         c.longName for c in rsk.channels if c.longName in data_field_names
     }
     assert source_channel_names == expected
+
+
+@pytest.mark.requires_example_data
+def test_build_dataset_covers_every_data_channel_for_fluorometer_instrument(
+    example_rsk_path_fluorometer: Path,
+) -> None:
+    """build_dataset also covers a differently-configured instrument.
+
+    No sea_pressure, has backscatter/chlorophyll/cdom, no oxygen channel.
+    """
+    rsk = read_rsk(example_rsk_path_fluorometer)
+    data_field_names = rsk.data.dtype.names or ()
+
+    dataset = build_dataset(
+        rsk, example_rsk_path_fluorometer, ProjectSettings()
+    )
+
+    source_channel_names = {
+        channel.metadata["source_channel_name"]
+        for channel in dataset.channels.values()
+    }
+    expected = {
+        c.longName for c in rsk.channels if c.longName in data_field_names
+    }
+    assert source_channel_names == expected
+
+
+@pytest.mark.requires_example_data
+def test_build_dataset_covers_every_data_channel_for_oxygen_instrument(
+    example_rsk_path_oxygen: Path,
+) -> None:
+    """build_dataset also covers a third instrument, with real oxygen data."""
+    rsk = read_rsk(example_rsk_path_oxygen)
+    data_field_names = rsk.data.dtype.names or ()
+
+    dataset = build_dataset(rsk, example_rsk_path_oxygen, ProjectSettings())
+
+    source_channel_names = {
+        channel.metadata["source_channel_name"]
+        for channel in dataset.channels.values()
+    }
+    expected = {
+        c.longName for c in rsk.channels if c.longName in data_field_names
+    }
+    assert source_channel_names == expected
+
+
+@pytest.mark.requires_example_data
+def test_build_dataset_maps_dissolved_oxygen_saturation_channel(
+    example_rsk_path_oxygen: Path,
+) -> None:
+    """The real dissolved_o2_saturation channel is read and CF-labeled.
+
+    `dataset.channels` keys off a slug of the CF long_name, not the raw
+    pyrsktools identifier, so this channel lives under
+    "dissolved_oxygen_saturation", not "dissolved_o2_saturation" -- that
+    raw identifier survives only as `source_channel_name`.
+    """
+    rsk = read_rsk(example_rsk_path_oxygen)
+
+    dataset = build_dataset(rsk, example_rsk_path_oxygen, ProjectSettings())
+
+    oxygen = dataset.channels["dissolved_oxygen_saturation"]
+    assert oxygen.metadata["long_name"] == "Dissolved oxygen saturation"
+    assert (
+        oxygen.metadata["standard_name"]
+        == "fractional_saturation_of_oxygen_in_sea_water"
+    )
+    assert oxygen.metadata["source_channel_name"] == "dissolved_o2_saturation"
+    assert np.array_equal(oxygen.data, rsk.data["dissolved_o2_saturation"])
 
 
 @pytest.mark.requires_example_data

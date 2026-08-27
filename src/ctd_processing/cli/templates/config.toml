@@ -251,6 +251,123 @@
 # reference_latitude = 45.0
 # reference_longitude = -125.0
 
+# [process.derived_variables] configures which TEOS-10 derived variables
+# (computed via gsw) are attached to each profile, right after a position
+# has been attached to it (see [process.geolocation] above) and before it
+# is written out. Every quantity is derived from the profile's
+# sea_water_electrical_conductivity, sea_water_temperature, and
+# sea_pressure channels, plus its latitude/longitude. Disabling a field
+# only omits that channel from the output -- the underlying practical/
+# absolute salinity and conservative temperature chain is always computed
+# internally regardless, since later quantities depend on it. A channel
+# already present under one of these keys (e.g. an instrument's own
+# onboard-computed practical_salinity/absolute_salinity/density_anomaly)
+# is overwritten, since the recomputed value incorporates whatever
+# upstream raw-channel/CT-lag corrections were applied.
+#
+# [process.derived_variables]
+
+# z (default: true): height, in meters (negative in the ocean), added
+# under the channel key "z".
+# z = true
+
+# practical_salinity (default: true): practical salinity, added under
+# "practical_salinity".
+# practical_salinity = true
+
+# absolute_salinity (default: true): absolute salinity, added under
+# "absolute_salinity".
+# absolute_salinity = true
+
+# conservative_temperature (default: true): conservative temperature,
+# added under "conservative_temperature".
+# conservative_temperature = true
+
+# potential_density (default: true): potential density anomaly
+# referenced to 0 dbar (sigma0), added under "density_anomaly".
+# potential_density = true
+
+# potential_temperature (default: false): potential temperature
+# referenced to 0 dbar, added under "potential_temperature".
+# potential_temperature = false
+
+# sound_speed (default: false): speed of sound in sea water, added
+# under "speed_of_sound_in_sea_water".
+# sound_speed = false
+
+# density (default: false): in-situ density, added under
+# "sea_water_density".
+# density = false
+
+# spiciness (default: false): spiciness referenced to 0 dbar, added
+# under "spiciness". No CF standard name exists for this quantity.
+# spiciness = false
+
+# freezing_point (default: false): Conservative Temperature at which
+# seawater freezes, added under "freezing_point". No CF standard name
+# exists for this quantity.
+# freezing_point = false
+
+# thermal_expansion (default: false): thermal expansion coefficient,
+# added under "thermal_expansion_coefficient". No CF standard name
+# exists for this quantity.
+# thermal_expansion = false
+
+# haline_contraction (default: false): haline contraction coefficient,
+# added under "haline_contraction_coefficient". No CF standard name
+# exists for this quantity.
+# haline_contraction = false
+
+# oxygen_concentration (default: false): oxygen concentration derived
+# from a measured dissolved_oxygen_saturation channel and the oxygen
+# solubility at 100% air-sea equilibrium, added under
+# "oxygen_concentration_from_saturation". Unlike every other field
+# above, this one's input isn't present on every dataset -- if enabled
+# and the dataset has no dissolved_oxygen_saturation channel, an error
+# is raised rather than silently skipping it.
+# oxygen_concentration = false
+
+# [process.despike] sets the project-wide default despike settings --
+# how many standard deviations of the residual against a rolling median
+# count as a spike, how wide that rolling median's window is, and how
+# many detect-and-replace passes to run (stopping early the first pass
+# that finds nothing new). Spikes are always replaced with NaN. These
+# defaults only take effect for a channel that's actually listed in
+# [process.despike_channels] below -- setting values here alone despikes
+# nothing.
+#
+# [process.despike]
+
+# threshold (default: 2.0): number of standard deviations a point's
+# residual against the rolling median must exceed to be flagged.
+# threshold = 2.0
+
+# window_length (default: 3): width, in samples, of the rolling median
+# filter. Must be odd.
+# window_length = 3
+
+# max_iterations (default: 5): maximum number of detect-and-replace
+# passes to run.
+# max_iterations = 5
+
+# [process.despike_channels.<name>] sections say which channels to
+# despike -- a channel is despiked if and only if it has a section here,
+# even an empty one (meaning "use [process.despike]'s defaults for this
+# channel"). <name> is the same channel-key namespace used elsewhere:
+# raw channels (e.g. "sea_water_temperature", matching
+# [process.raw_channels.<name>]) and derived-variable channels (e.g.
+# "practical_salinity", matching [process.derived_variables]'s output
+# keys) share one namespace. Despiking runs as soon as a channel exists
+# -- for raw channels, before any derived variable is computed from
+# them; for derived channels, immediately after that quantity is
+# computed and before it feeds the next one (e.g. practical_salinity is
+# despiked before it's used to compute absolute_salinity). Only the
+# fields given here override [process.despike]'s defaults; the example
+# below overrides just threshold.
+#
+# [process.despike_channels.practical_salinity]
+# threshold = 3.0
+
 # [instruments.<serial_number>] sections are optional and override
 # [process] settings for one specific instrument, identified by its
 # serial number, across every deployment it appears in. <serial_number>

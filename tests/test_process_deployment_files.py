@@ -8,6 +8,7 @@ import pytest
 import ctd_processing.process as process_module
 from ctd_processing.config import (
     GeolocationSettings,
+    InstrumentSettings,
     PathsSettings,
     ProcessSettings,
     Settings,
@@ -104,3 +105,37 @@ def test_process_deployment_files_continues_after_one_failure(
     ]
     assert "Failed to process deployment" in failure_record.getMessage()
     assert failure_record.exc_info is not None
+
+
+@pytest.mark.requires_example_data
+def test_process_deployment_files_processes_two_different_instruments(
+    tmp_path: Path,
+    example_rsk_path: Path,
+    example_rsk_path_oxygen: Path,
+) -> None:
+    """Two genuinely different real instruments process together in one batch.
+
+    The 243188 instrument already has its own onboard sea_pressure
+    channel; the 65798 (oxygen) instrument does not, so it needs its own
+    atmospheric_pressure override -- this exercises
+    resolve_process_settings' per-serial-number override resolution
+    against real, distinct instruments rather than stubs. Both files are
+    passed as-is; process_deployment_files makes its own private copies
+    before processing.
+    """
+    profiles_directory = tmp_path / "profiles"
+    settings = _settings(tmp_path)
+    settings.instruments["65798"] = InstrumentSettings(
+        process={"atmospheric_pressure": 10.1325}
+    )
+
+    process_deployment_files(
+        [example_rsk_path, example_rsk_path_oxygen],
+        profiles_directory,
+        settings,
+    )
+
+    written = list(profiles_directory.glob("*.parquet"))
+    serial_numbers = {path.name.split("_")[0] for path in written}
+    assert "243188" in serial_numbers
+    assert "65798" in serial_numbers

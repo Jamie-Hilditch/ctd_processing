@@ -280,7 +280,7 @@ class GeolocationSettings(BaseModel):
 
     See `ctd_processing.process.geolocation.attach_geolocation`, applied to
     each profile's own extracted `Dataset` after it is sliced out of the
-    full deployment (see `ctd_processing.process.save.save_profiles`).
+    full deployment (see `ctd_processing.process.process_profile`).
     Every profile is given a `profile_start_time`/`profile_end_time` (its
     first/last `time` samples) and a `latitude`/`longitude` position,
     recorded in that profile's `Dataset.metadata`. This step is not
@@ -365,6 +365,153 @@ class GeolocationSettings(BaseModel):
         return self
 
 
+class DerivedVariablesSettings(BaseModel):
+    """Settings for TEOS-10 derived variables computed via `gsw`.
+
+    See `ctd_processing.process.derived_variables.compute_derived_variables`,
+    applied to each profile's `Dataset` after a position has been attached
+    to it (see `GeolocationSettings`) but before it is written out (see
+    `ctd_processing.process.process_profile`). Every quantity here is
+    derived from the profile's `sea_water_electrical_conductivity`,
+    `sea_water_temperature`, and `sea_pressure` channels, plus its
+    `latitude`/`longitude` position. Disabling a field only omits that
+    channel from the output -- the underlying practical/absolute
+    salinity and conservative temperature chain is always computed
+    internally regardless of which fields are enabled, since later
+    quantities (e.g. `potential_density`) depend on it.
+
+    Attributes
+    ----------
+    z : bool
+        Whether to compute height, in meters (`gsw.z_from_p`; negative in
+        the ocean), added under the channel key ``"z"``. Defaults to
+        ``True``.
+    practical_salinity : bool
+        Whether to compute practical salinity (`gsw.SP_from_C`), added
+        under ``"practical_salinity"`` -- overwriting any channel already
+        present there (e.g. from the instrument's own onboard
+        computation), since this one incorporates whatever upstream
+        raw-channel/CT-lag corrections were applied, which an
+        onboard-computed value would not. Defaults to ``True``.
+    absolute_salinity : bool
+        Whether to compute absolute salinity (`gsw.SA_from_SP`), added
+        under ``"absolute_salinity"`` (overwriting, as above). Defaults
+        to ``True``.
+    conservative_temperature : bool
+        Whether to compute conservative temperature (`gsw.CT_from_t`),
+        added under ``"conservative_temperature"``. Defaults to ``True``.
+    potential_density : bool
+        Whether to compute potential density anomaly referenced to 0 dbar
+        (`gsw.sigma0`), added under ``"density_anomaly"`` (overwriting,
+        as above) -- the same channel key already used for an
+        instrument's own onboard-computed potential density anomaly (see
+        `ctd_processing.process.cf_channels`). Defaults to ``True``.
+    potential_temperature : bool
+        Whether to compute potential temperature referenced to 0 dbar
+        (`gsw.pt0_from_t`), added under ``"potential_temperature"``
+        (overwriting, as above). Defaults to ``False``.
+    sound_speed : bool
+        Whether to compute the speed of sound in sea water
+        (`gsw.sound_speed`), added under
+        ``"speed_of_sound_in_sea_water"`` (overwriting, as above).
+        Defaults to ``False``.
+    density : bool
+        Whether to compute in-situ density (`gsw.rho`), added under
+        ``"sea_water_density"``. Defaults to ``False``.
+    spiciness : bool
+        Whether to compute spiciness referenced to 0 dbar
+        (`gsw.spiciness0`), added under ``"spiciness"``. No CF standard
+        name exists for this quantity. Defaults to ``False``.
+    freezing_point : bool
+        Whether to compute the Conservative Temperature at which seawater
+        freezes (`gsw.CT_freezing`, with ``saturation_fraction=0`` --
+        dissolved-air effects on the freezing point are not modeled),
+        added under ``"freezing_point"``. No CF standard name exists for
+        this quantity. Defaults to ``False``.
+    thermal_expansion : bool
+        Whether to compute the thermal expansion coefficient
+        (`gsw.alpha`), added under ``"thermal_expansion_coefficient"``.
+        No CF standard name exists for this quantity. Defaults to
+        ``False``.
+    haline_contraction : bool
+        Whether to compute the haline contraction coefficient
+        (`gsw.beta`), added under ``"haline_contraction_coefficient"``.
+        No CF standard name exists for this quantity. Defaults to
+        ``False``.
+    oxygen_concentration : bool
+        Whether to derive an oxygen concentration from a measured
+        ``dissolved_oxygen_saturation`` channel and the oxygen
+        solubility at 100% air-sea equilibrium (`gsw.O2sol`), added
+        under ``"oxygen_concentration_from_saturation"``. Unlike every
+        other field here, this one's input is not present on every
+        dataset -- if enabled and `dataset.channels` has no
+        ``dissolved_oxygen_saturation`` channel,
+        `ctd_processing.process.derived_variables.compute_derived_variables`
+        raises ``ValueError`` naming it, rather than silently skipping
+        it. Defaults to ``False``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    z: bool = True
+    practical_salinity: bool = True
+    absolute_salinity: bool = True
+    conservative_temperature: bool = True
+    potential_density: bool = True
+    potential_temperature: bool = False
+    sound_speed: bool = False
+    density: bool = False
+    spiciness: bool = False
+    freezing_point: bool = False
+    thermal_expansion: bool = False
+    haline_contraction: bool = False
+    oxygen_concentration: bool = False
+
+
+class DespikeSettings(BaseModel):
+    """Settings for despiking one channel with an iterative rolling median.
+
+    See `ctd_processing.process.despike`. The channel is smoothed with a
+    rolling median filter of `window_length` to get a "reference" series;
+    points whose residual against that reference exceeds `threshold`
+    standard deviations are replaced with NaN. This repeats, up to
+    `max_iterations` times, stopping early the first pass that finds no
+    new spikes -- removing large spikes can unmask smaller ones the
+    previous pass's median/std missed.
+
+    Attributes
+    ----------
+    threshold : float
+        Number of standard deviations (of the residual against the
+        rolling median) a point must exceed to be flagged as a spike.
+        Defaults to ``2.0``, matching `pyrsktools.RSK.despike`'s own
+        default.
+    window_length : int
+        Width, in samples, of the rolling median filter. Must be odd.
+        Defaults to ``3``, matching `pyrsktools.RSK.despike`'s own
+        default.
+    max_iterations : int
+        Maximum number of detect-and-replace passes to run. Defaults to
+        ``5`` -- genuinely iterative by default, since a pass that finds
+        nothing new stops early regardless.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    threshold: float = 2.0
+    window_length: int = 3
+    max_iterations: int = 5
+
+    @model_validator(mode="after")
+    def _validate_window_length(self) -> "DespikeSettings":
+        """Require an odd `window_length`."""
+        if self.window_length % 2 == 0:
+            raise ValueError(
+                f"window_length must be odd; got {self.window_length}."
+            )
+        return self
+
+
 class ProcessSettings(BaseModel):
     """Settings specific to the ``process`` command.
 
@@ -404,7 +551,7 @@ class ProcessSettings(BaseModel):
     profile_format : {"netcdf", "parquet"}
         File format for extracted profile files written to
         ``paths.profiles_directory`` (see
-        `ctd_processing.process.save.save_profiles`). ``"parquet"``
+        `ctd_processing.process.save.save_profile`). ``"parquet"``
         (the default) is written with zstd compression and byte-stream-split
         encoding for float columns -- the better fit for this fast,
         size-sensitive intermediate stage. ``"netcdf"`` writes
@@ -419,6 +566,29 @@ class ProcessSettings(BaseModel):
         `GeolocationSettings`). Required -- unlike every other field of
         this class, it has no default, since `GeolocationSettings` itself
         has no valid unconfigured state.
+    derived_variables : DerivedVariablesSettings
+        Settings for TEOS-10 derived variables computed via `gsw` (see
+        `DerivedVariablesSettings`), applied to each profile right after
+        `geolocation` and before it is written out. Optional; every field
+        has a default.
+    despike : DespikeSettings
+        Project-wide default despike settings (see `DespikeSettings`),
+        used as the base that `despike_channels` entries override.
+        Optional; every field has a default.
+    despike_channels : dict[str, dict[str, Any]]
+        Which channels to despike, and their per-channel overrides of
+        `despike`. Keyed by channel name -- the same namespace for raw
+        channels (e.g. ``"sea_water_temperature"``, matching
+        `raw_channels`' own keys) and derived-variable channels (e.g.
+        ``"practical_salinity"``, matching
+        `ctd_processing.process.derived_variables`'s output keys). A
+        channel is despiked if and only if it has an entry here, even an
+        empty one (``{}``, meaning "use `despike`'s defaults for this
+        channel"); each entry's fields override `despike` field-by-field
+        (see `resolve_despike_settings`) -- the same partial-override
+        pattern `InstrumentSettings.process`/`DeploymentSettings.process`
+        use, merged one level deeper. Defaults to an empty dict, i.e. no
+        channel is despiked.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -429,6 +599,11 @@ class ProcessSettings(BaseModel):
     ct_lag: CTLagSettings = Field(default_factory=CTLagSettings)
     profile_format: Literal["netcdf", "parquet"] = "parquet"
     geolocation: GeolocationSettings
+    derived_variables: DerivedVariablesSettings = Field(
+        default_factory=DerivedVariablesSettings
+    )
+    despike: DespikeSettings = Field(default_factory=DespikeSettings)
+    despike_channels: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class InstrumentSettings(BaseModel):
@@ -724,6 +899,42 @@ def resolve_process_settings(
     return ProcessSettings.model_validate(merged)
 
 
+def resolve_despike_settings(
+    process_settings: ProcessSettings,
+) -> dict[str, DespikeSettings]:
+    """Resolve the effective `DespikeSettings` for every configured channel.
+
+    For each channel named in `process_settings.despike_channels`,
+    deep-merges that channel's partial override onto
+    `process_settings.despike` (the project-wide defaults) and validates
+    the result -- the same override mechanism `resolve_process_settings`
+    uses for instrument/deployment overrides, applied one level deeper.
+    A channel with no entry in `despike_channels` is not despiked at all,
+    and so has no entry in the returned dict.
+
+    Parameters
+    ----------
+    process_settings : ProcessSettings
+        Settings providing `despike`/`despike_channels`.
+
+    Returns
+    -------
+    dict[str, DespikeSettings]
+        The resolved, validated despike settings, keyed by channel name.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If a channel's merged override does not form valid
+        `DespikeSettings`.
+    """
+    base = process_settings.despike.model_dump(mode="json")
+    return {
+        name: DespikeSettings.model_validate(_deep_merge(base, override))
+        for name, override in process_settings.despike_channels.items()
+    }
+
+
 def _validate_declared_overrides(settings: Settings) -> None:
     """Eagerly validate every declared instrument/deployment override.
 
@@ -731,7 +942,10 @@ def _validate_declared_overrides(settings: Settings) -> None:
     onto `settings.process` and validated on its own -- independently of
     every other entry -- so a typo'd or invalid override fails fast at
     config-load time rather than only when that specific instrument or
-    deployment is later processed. This does not validate every
+    deployment is later processed. `despike_channels` overrides are
+    additionally expanded via `resolve_despike_settings`, so a bad
+    per-channel despike override (e.g. an even `window_length`) also
+    fails here rather than at first use. This does not validate every
     instrument x deployment combination (which one recorded which
     deployment is only known once a ``.rsk`` file is actually read), so a
     genuine conflict between an instrument and a deployment override can
@@ -745,20 +959,25 @@ def _validate_declared_overrides(settings: Settings) -> None:
     Raises
     ------
     pydantic.ValidationError
-        If any declared override does not form valid `ProcessSettings`,
-        annotated with a note identifying the offending
+        If any declared override does not form valid `ProcessSettings`
+        (or, for `despike_channels`, `DespikeSettings`), annotated with a
+        note identifying the offending
         ``[instruments.*]``/``[deployments.*]`` table.
     """
     for serial_number in settings.instruments:
         try:
-            resolve_process_settings(settings, serial_number=serial_number)
+            resolved = resolve_process_settings(
+                settings, serial_number=serial_number
+            )
+            resolve_despike_settings(resolved)
         except ValidationError as exc:
             exc.add_note(f"in [instruments.{serial_number}.process]")
             raise
 
     for stem in settings.deployments:
         try:
-            resolve_process_settings(settings, stem=stem)
+            resolved = resolve_process_settings(settings, stem=stem)
+            resolve_despike_settings(resolved)
         except ValidationError as exc:
             exc.add_note(f"in [deployments.{stem}.process]")
             raise

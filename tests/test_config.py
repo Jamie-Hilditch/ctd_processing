@@ -6,6 +6,8 @@ from pydantic import ValidationError
 from ctd_processing.config import (
     CTLagSettings,
     DeploymentSettings,
+    DerivedVariablesSettings,
+    DespikeSettings,
     GeolocationSettings,
     InstrumentSettings,
     PathsSettings,
@@ -17,6 +19,7 @@ from ctd_processing.config import (
     load_settings,
     merge_overrides,
     parse_overrides,
+    resolve_despike_settings,
     resolve_process_settings,
 )
 
@@ -855,6 +858,181 @@ def test_process_ct_lag_rejects_min_lag_greater_than_max_lag() -> None:
     """min_lag greater than max_lag fails validation."""
     with pytest.raises(ValidationError):
         CTLagSettings(min_lag=5, max_lag=-5)
+
+
+def test_process_derived_variables_defaults(tmp_path) -> None:
+    """process.derived_variables defaults to DerivedVariablesSettings()."""
+    settings = load_settings(
+        set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
+        + _other_paths(tmp_path)
+    )
+    assert settings.process.derived_variables == DerivedVariablesSettings()
+
+
+def test_derived_variables_settings_core_five_default_true() -> None:
+    """The core five derived variables default to enabled."""
+    settings = DerivedVariablesSettings()
+    assert settings.z is True
+    assert settings.practical_salinity is True
+    assert settings.absolute_salinity is True
+    assert settings.conservative_temperature is True
+    assert settings.potential_density is True
+
+
+def test_derived_variables_settings_extras_default_false() -> None:
+    """The optional extras default to disabled."""
+    settings = DerivedVariablesSettings()
+    assert settings.potential_temperature is False
+    assert settings.sound_speed is False
+    assert settings.density is False
+    assert settings.spiciness is False
+    assert settings.freezing_point is False
+    assert settings.thermal_expansion is False
+    assert settings.haline_contraction is False
+    assert settings.oxygen_concentration is False
+
+
+def test_process_derived_variables_fields_can_be_set(tmp_path) -> None:
+    """[process.derived_variables] fields parse correctly from a config file."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
+        "[process.derived_variables]\n"
+        "z = false\n"
+        "sound_speed = true\n"
+        "oxygen_concentration = true\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.process.derived_variables.z is False
+    assert settings.process.derived_variables.sound_speed is True
+    assert settings.process.derived_variables.oxygen_concentration is True
+    assert settings.process.derived_variables.practical_salinity is True
+
+
+def test_process_derived_variables_rejects_unknown_key(tmp_path) -> None:
+    """An unknown key inside [process.derived_variables] fails validation."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
+        "[process.derived_variables]\n"
+        "not_a_real_option = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+def test_despike_settings_defaults() -> None:
+    """DespikeSettings' defaults match pyrsktools' own, plus max_iterations."""
+    settings = DespikeSettings()
+    assert settings.threshold == 2.0
+    assert settings.window_length == 3
+    assert settings.max_iterations == 5
+
+
+def test_despike_settings_rejects_even_window_length() -> None:
+    """An even window_length fails validation."""
+    with pytest.raises(ValidationError):
+        DespikeSettings(window_length=4)
+
+
+def test_process_despike_defaults(tmp_path) -> None:
+    """process.despike/despike_channels default to DespikeSettings()/{}."""
+    settings = load_settings(
+        set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
+        + _other_paths(tmp_path)
+    )
+    assert settings.process.despike == DespikeSettings()
+    assert settings.process.despike_channels == {}
+
+
+def test_resolve_despike_settings_omits_unconfigured_channels() -> None:
+    """A channel with no despike_channels entry has no resolved settings."""
+    process_settings = ProcessSettings(
+        geolocation=_GEOLOCATION,
+        despike_channels={"practical_salinity": {}},
+    )
+
+    resolved = resolve_despike_settings(process_settings)
+
+    assert set(resolved) == {"practical_salinity"}
+    assert "sea_water_temperature" not in resolved
+
+
+def test_resolve_despike_settings_uses_defaults_for_empty_override() -> None:
+    """An empty despike_channels entry uses despike's defaults as-is."""
+    process_settings = ProcessSettings(
+        geolocation=_GEOLOCATION,
+        despike=DespikeSettings(threshold=3.0, window_length=5),
+        despike_channels={"practical_salinity": {}},
+    )
+
+    resolved = resolve_despike_settings(process_settings)
+
+    assert resolved["practical_salinity"] == DespikeSettings(
+        threshold=3.0, window_length=5
+    )
+
+
+def test_resolve_despike_settings_merges_partial_override() -> None:
+    """A partial per-channel override changes only the given fields."""
+    process_settings = ProcessSettings(
+        geolocation=_GEOLOCATION,
+        despike=DespikeSettings(threshold=2.0, window_length=5),
+        despike_channels={"practical_salinity": {"threshold": 4.0}},
+    )
+
+    resolved = resolve_despike_settings(process_settings)
+
+    assert resolved["practical_salinity"].threshold == 4.0
+    assert resolved["practical_salinity"].window_length == 5
+
+
+def test_load_settings_rejects_invalid_despike_channel_override(
+    tmp_path,
+) -> None:
+    """A bad despike_channels override inside an instrument override raises."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
+        "[instruments.208532.process.despike_channels.practical_salinity]\n"
+        "window_length = 4\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
 
 
 def test_instruments_and_deployments_default_to_empty(tmp_path) -> None:

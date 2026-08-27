@@ -38,9 +38,9 @@ class Dataset:
         Ordered log of processing steps applied to this dataset as a
         whole. Defaults to an empty list.
     channels : dict[str, Channel]
-        Every channel in the dataset, keyed by name, including `"time"`
-        itself. Seeded with `{"time": time}` at construction; every other
-        entry is added via `add_channel`. Not a constructor argument.
+        Every channel in the dataset except `time` itself (see `time`),
+        keyed by name. Empty at construction; every entry is added via
+        `add_channel`. Not a constructor argument.
     length : int
         Number of samples in the dataset, taken from `len(time.data)` at
         construction. Every channel added via `add_channel` must have
@@ -59,11 +59,11 @@ class Dataset:
     length: int = field(init=False, default=0)
 
     def __post_init__(self) -> None:
-        """Seed `channels`/`length` from `time` and validate it."""
+        """Seed `length` from `time`; validate it; `channels` starts empty."""
         if not self.time.is_increasing():
             raise ValueError("Dataset's time channel must be increasing.")
         self.length = len(self.time.data)
-        self.channels = {"time": self.time}
+        self.channels = {}
 
     def __repr__(self) -> str:
         """Unambiguous representation, naming channels instead of dumping them.
@@ -74,7 +74,7 @@ class Dataset:
             E.g. ``"Dataset(channels=['time', 'temperature'], length=3, ..."``.
         """
         return (
-            f"{type(self).__name__}(channels={list(self.channels)!r}, "
+            f"{type(self).__name__}(channels={['time', *self.channels]!r}, "
             f"length={self.length}, metadata={self.metadata!r}, "
             f"history={self.history!r})"
         )
@@ -88,10 +88,10 @@ class Dataset:
             E.g. ``"Dataset: 3 samples across 2 channel(s): time,
             temperature"``.
         """
-        names = ", ".join(self.channels)
+        names = ", ".join(["time", *self.channels])
         return (
             f"{type(self).__name__}: {self.length} samples across "
-            f"{len(self.channels)} channel(s): {names}"
+            f"{len(self.channels) + 1} channel(s): {names}"
         )
 
     def record(self, description: str) -> None:
@@ -117,9 +117,15 @@ class Dataset:
         Raises
         ------
         ValueError
-            If `name` is already present in `channels`, or if `channel`'s
+            If `name` is ``"time"`` (reserved for `Dataset.time`), if
+            `name` is already present in `channels`, or if `channel`'s
             data length does not equal `length`.
         """
+        if name == "time":
+            raise ValueError(
+                "'time' is reserved for Dataset.time; it cannot be used "
+                "as a channel name."
+            )
         if name in self.channels:
             raise ValueError(
                 f"Channel {name!r} is already present in this dataset."
@@ -135,10 +141,14 @@ class Dataset:
     def remove_channel(self, name: str) -> Channel:
         """Remove and return a channel from the dataset.
 
+        `"time"` is never a valid `name` here -- it was never added to
+        `channels` in the first place (see `Dataset.time`), so removing
+        it raises `KeyError` like any other absent name.
+
         Parameters
         ----------
         name : str
-            The name of the channel to remove. Must not be `"time"`.
+            The name of the channel to remove.
 
         Returns
         -------
@@ -149,11 +159,7 @@ class Dataset:
         ------
         KeyError
             If `name` is not present in `channels`.
-        ValueError
-            If `name` is `"time"`.
         """
-        if name == "time":
-            raise ValueError("Cannot remove the 'time' channel.")
         channel = self.channels.pop(name)
         self.record(f"removed channel {name!r}")
         return channel
@@ -196,7 +202,5 @@ class Dataset:
             time=new_time, metadata=new_metadata, history=new_history
         )
         for name, channel in self.channels.items():
-            if name == "time":
-                continue
             new_dataset.channels[name] = channel.subset(indices, description)
         return new_dataset
