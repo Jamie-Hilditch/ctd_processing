@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ctd_processing.config import Settings, resolve_process_settings
 from ctd_processing.process.build import build_dataset
+from ctd_processing.process.ct_lag import process_ct_lag
 from ctd_processing.process.profiles import find_profiles
 from ctd_processing.process.raw_channels import process_raw_channels
 from ctd_processing.process.read import read_rsk
@@ -44,9 +45,11 @@ def process_deployment(
     applies configured raw-channel processing (`raw_channels`) to every
     channel, ensures a `sea_pressure` channel exists (trusting one
     already in the dataset by default, or recomputing it from
-    `absolute_pressure` if `atmospheric_pressure` is set), and identifies
-    profiles from it using `profiles`. Profile extraction, TEOS-10
-    derived variables, and CF-compliant output are not yet implemented.
+    `absolute_pressure` if `atmospheric_pressure` is set), identifies
+    profiles from it using `profiles`, and, if configured (`ct_lag`),
+    calculates and applies a deployment-wide conductivity/temperature lag
+    correction. Profile extraction, TEOS-10 derived variables, and
+    CF-compliant output are not yet implemented.
     Once the `Dataset` is built, the underlying `pyrsktools.RSK` object
     is no longer referenced and is free to be garbage collected -- every
     later step operates purely on the `Dataset`. `settings.project`
@@ -83,6 +86,7 @@ def process_deployment(
     )
     profiles = find_profiles(dataset, process_settings.profiles)
     logger.info("Identified %d profile(s) in %s", len(profiles), file)
+    dataset = process_ct_lag(dataset, profiles, process_settings.ct_lag)
     logger.debug("Built dataset: %s", dataset)
 
 

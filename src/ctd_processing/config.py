@@ -4,7 +4,13 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -203,6 +209,72 @@ class ProfileSettings(BaseModel):
     missing: Literal["raise", "drop"] = "drop"
 
 
+class CTLagSettings(BaseModel):
+    """Settings for the conductivity/temperature (CT) lag correction.
+
+    See `ctd_processing.process.ct_lag`, which applies these to a
+    dataset's `sea_water_electrical_conductivity`, `sea_water_temperature`,
+    and `sea_pressure` channels once profiles have been identified (see
+    `ProfileSettings`). Conductivity and temperature sensors respond at
+    slightly different speeds, so the two channels sample the same water
+    parcel at slightly different times; shifting conductivity by a small
+    number of samples relative to temperature reduces the resulting
+    salinity spiking. This computes a single shift for the whole
+    deployment, not one per profile.
+
+    Attributes
+    ----------
+    enabled : bool
+        Whether to compute and apply this correction. Defaults to
+        ``False``. To apply a known, fixed shift instead of computing one
+        here, set `RawChannelSettings.shift` on the
+        `sea_water_electrical_conductivity` channel directly rather than
+        enabling this -- there is no manual-value option here.
+    sea_pressure_min : float or None
+        If set, only samples with `sea_pressure` greater than or equal to
+        this value (in dbar) feed the lag search. Optional; defaults to
+        ``None``, meaning no lower bound. Useful for excluding unreliable
+        near-surface measurements or sections with highly variable
+        profiling speed.
+    sea_pressure_max : float or None
+        If set, only samples with `sea_pressure` less than or equal to
+        this value (in dbar) feed the lag search. Optional; defaults to
+        ``None``, meaning no upper bound.
+    window_length : int
+        Width, in samples, of the running-mean high-pass filter used to
+        isolate salinity spiking when scoring a candidate lag. Must be
+        odd. Defaults to ``21``.
+    min_lag : int
+        Smallest candidate lag, in samples, to search over. Defaults to
+        ``-20``.
+    max_lag : int
+        Largest candidate lag, in samples, to search over. Defaults to
+        ``20``. Must be greater than or equal to `min_lag`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    sea_pressure_min: float | None = None
+    sea_pressure_max: float | None = None
+    window_length: int = 21
+    min_lag: int = -20
+    max_lag: int = 20
+
+    @model_validator(mode="after")
+    def _validate_search_range(self) -> "CTLagSettings":
+        """Require an odd `window_length` and `min_lag` <= `max_lag`."""
+        if self.window_length % 2 == 0:
+            raise ValueError(
+                f"window_length must be odd; got {self.window_length}."
+            )
+        if self.min_lag > self.max_lag:
+            raise ValueError(
+                f"min_lag ({self.min_lag}) must be <= max_lag ({self.max_lag})."
+            )
+        return self
+
+
 class ProcessSettings(BaseModel):
     """Settings specific to the ``process`` command.
 
@@ -234,6 +306,11 @@ class ProcessSettings(BaseModel):
     profiles : ProfileSettings
         Settings for identifying individual profiles from `sea_pressure`
         (see `ProfileSettings`). Optional; every field has a default.
+    ct_lag : CTLagSettings
+        Settings for the conductivity/temperature lag correction (see
+        `CTLagSettings`), applied after `profiles` are identified.
+        Optional; every field has a default, and `CTLagSettings.enabled`
+        defaults to ``False``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -241,6 +318,7 @@ class ProcessSettings(BaseModel):
     raw_channels: dict[str, RawChannelSettings] = Field(default_factory=dict)
     atmospheric_pressure: float | None = None
     profiles: ProfileSettings = Field(default_factory=ProfileSettings)
+    ct_lag: CTLagSettings = Field(default_factory=CTLagSettings)
 
 
 class InstrumentSettings(BaseModel):

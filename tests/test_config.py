@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from ctd_processing.config import (
+    CTLagSettings,
     DeploymentSettings,
     InstrumentSettings,
     PathsSettings,
@@ -543,6 +544,79 @@ def test_process_profiles_rejects_invalid_direction(tmp_path) -> None:
 
     with pytest.raises(ValidationError):
         load_settings(config_path)
+
+
+def test_process_ct_lag_defaults(tmp_path) -> None:
+    """process.ct_lag defaults to CTLagSettings() when omitted."""
+    settings = load_settings(
+        set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
+        + _other_paths(tmp_path)
+    )
+    assert settings.process.ct_lag == CTLagSettings()
+    assert settings.process.ct_lag.enabled is False
+
+
+def test_process_ct_lag_fields_can_be_set(tmp_path) -> None:
+    """[process.ct_lag] fields parse correctly from a config file."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.ct_lag]\n"
+        "enabled = true\n"
+        "sea_pressure_min = 1.0\n"
+        "sea_pressure_max = 500.0\n"
+        "window_length = 15\n"
+        "min_lag = -10\n"
+        "max_lag = 10\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.process.ct_lag.enabled is True
+    assert settings.process.ct_lag.sea_pressure_min == 1.0
+    assert settings.process.ct_lag.sea_pressure_max == 500.0
+    assert settings.process.ct_lag.window_length == 15
+    assert settings.process.ct_lag.min_lag == -10
+    assert settings.process.ct_lag.max_lag == 10
+
+
+def test_process_ct_lag_rejects_unknown_key(tmp_path) -> None:
+    """An unknown key inside [process.ct_lag] fails validation."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.ct_lag]\n"
+        "not_a_real_option = 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+def test_process_ct_lag_rejects_even_window_length() -> None:
+    """An even window_length fails validation."""
+    with pytest.raises(ValidationError):
+        CTLagSettings(window_length=20)
+
+
+def test_process_ct_lag_rejects_min_lag_greater_than_max_lag() -> None:
+    """min_lag greater than max_lag fails validation."""
+    with pytest.raises(ValidationError):
+        CTLagSettings(min_lag=5, max_lag=-5)
 
 
 def test_instruments_and_deployments_default_to_empty(tmp_path) -> None:

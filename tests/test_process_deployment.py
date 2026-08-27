@@ -149,6 +149,11 @@ def _stub_pipeline(monkeypatch: pytest.MonkeyPatch, serial_number: str) -> dict:
     monkeypatch.setattr(
         process_module, "find_profiles", lambda dataset, settings: []
     )
+    monkeypatch.setattr(
+        process_module,
+        "process_ct_lag",
+        lambda dataset, profiles, settings: dataset,
+    )
 
     return captured
 
@@ -198,3 +203,24 @@ def test_process_deployment_deployment_override_wins_over_instrument(
     )
 
     assert captured["process_settings"].atmospheric_pressure == 10.5
+
+
+def test_process_deployment_applies_ct_lag_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A [process.ct_lag] override reaches the resolved ProcessSettings."""
+    captured = _stub_pipeline(monkeypatch, serial_number="208532")
+    settings = _settings(
+        tmp_path,
+        instruments={
+            "208532": InstrumentSettings(process={"ct_lag": {"enabled": True}})
+        },
+    )
+
+    process_deployment(
+        tmp_path / "rsk" / "243188_20260809_0304.rsk",
+        tmp_path / "profiles",
+        settings,
+    )
+
+    assert captured["process_settings"].ct_lag.enabled is True

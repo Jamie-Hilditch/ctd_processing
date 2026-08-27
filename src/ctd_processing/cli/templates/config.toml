@@ -172,6 +172,42 @@
 # processing.
 # missing = "drop"
 
+# [process.ct_lag] configures the conductivity/temperature (CT) lag
+# correction: shifting the sea_water_electrical_conductivity channel by a
+# small number of samples relative to sea_water_temperature to reduce
+# salinity spiking caused by the two sensors' slightly different response
+# times. A single shift is calculated for the whole deployment (not one
+# per profile) by grid-searching candidate lags and picking the one that
+# minimizes high-pass-filtered salinity variance, pooled across every
+# identified profile (see [process.profiles] above -- this runs after
+# profiles are identified).
+#
+# [process.ct_lag]
+
+# enabled (default: false): whether to calculate and apply this
+# correction. To apply a known, fixed shift instead of calculating one,
+# set shift under [process.raw_channels.sea_water_electrical_conductivity]
+# directly rather than enabling this.
+# enabled = false
+
+# sea_pressure_min, sea_pressure_max (optional, default: unset): restrict
+# the lag search to samples whose sea_pressure, in dbar, falls within
+# this range. Unset means no bound on that side. Useful for excluding
+# unreliable near-surface measurements or sections with highly variable
+# profiling speed.
+# sea_pressure_min = 1.0
+# sea_pressure_max = 500.0
+
+# window_length (default: 21): width, in samples, of the running-mean
+# high-pass filter used to isolate salinity spiking when scoring a
+# candidate lag. Must be odd.
+# window_length = 21
+
+# min_lag, max_lag (default: -20, 20): inclusive range of candidate lags,
+# in samples, to search over. min_lag must be <= max_lag.
+# min_lag = -20
+# max_lag = 20
+
 # [instruments.<serial_number>] sections are optional and override
 # [process] settings for one specific instrument, identified by its
 # serial number, across every deployment it appears in. <serial_number>

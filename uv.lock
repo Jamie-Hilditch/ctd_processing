@@ -113,6 +113,7 @@ name = "ctd-processing"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "gsw" },
     { name = "numba" },
     { name = "numpy" },
     { name = "profinder" },
@@ -131,6 +132,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "gsw", specifier = ">=3.6.0" },
     { name = "numba", specifier = ">=0.60.0" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "profinder", specifier = ">=0.2.5" },

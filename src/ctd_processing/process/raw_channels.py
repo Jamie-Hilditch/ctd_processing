@@ -12,6 +12,7 @@ import numpy.typing as npt
 
 from ctd_processing.config import ProcessSettings, RawChannelSettings
 from ctd_processing.logging_utils import log_verbose
+from ctd_processing.process._shift import shift_inplace
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
 
@@ -109,39 +110,6 @@ def remove_holds(channel: Channel) -> Channel:
     return channel
 
 
-@numba.njit(cache=True)
-def _shift_inplace(data: npt.NDArray[Any], shift: int) -> None:
-    """Shift `data` by `shift` samples in place, pandas `.shift()`-style.
-
-    ``output[i] = input[i - shift]`` wherever that index is valid, else
-    NaN. A single pass, but the iteration direction depends on the sign
-    of `shift` to avoid overwriting a source value before it's read:
-    positive `shift` (destination `i` always greater than source
-    `i - shift`) must go high-to-low; negative `shift` (destination `i`
-    always less than source `i + abs(shift)`) must go low-to-high. No new
-    arrays are allocated.
-
-    Parameters
-    ----------
-    data : numpy.typing.NDArray[Any]
-        The array to shift, mutated in place.
-    shift : int
-        Number of samples to shift by. Positive delays (shifts toward
-        higher indices' source, i.e. pulls earlier values forward);
-        negative advances. Zero is a no-op.
-    """
-    n = data.shape[0]
-    if shift == 0:
-        return
-    if shift > 0:
-        for i in range(n - 1, -1, -1):
-            data[i] = data[i - shift] if i >= shift else np.nan
-    else:
-        m = -shift
-        for i in range(n):
-            data[i] = data[i + m] if i < n - m else np.nan
-
-
 def shift_time(channel: Channel, shift: int) -> Channel:
     """Shift `channel`'s data by `shift` samples in place, pandas-style.
 
@@ -180,7 +148,7 @@ def shift_time(channel: Channel, shift: int) -> Channel:
             f"{channel.data.dtype}."
         )
 
-    _shift_inplace(channel.data, shift)  # ty: ignore
+    shift_inplace(channel.data, shift)  # ty: ignore
     channel.record(f"shifted by {shift} sample(s)")
     log_verbose(logger, "shifted by %d sample(s)", shift)
     return channel
