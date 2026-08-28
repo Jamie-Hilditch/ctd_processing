@@ -17,7 +17,7 @@
 # or deployment. Where more than one applies, [deployments.*] wins over
 # [instruments.*], which wins over [process].
 #
-# `process`, `bin`, and `concatenate` are still stubs pending the real
+# `process` and `concatenate` are still stubs pending the real
 # pyrsktools/gsw-based implementation.
 
 [project]
@@ -367,6 +367,42 @@
 #
 # [process.despike_channels.practical_salinity]
 # threshold = 3.0
+
+# [bin] configures the `bin` command, which reads back every profile file
+# for one deployment, bins each profile's channels onto a common grid
+# along one channel (default "z"), averages every other channel within
+# each bin, and stacks the results along a new "profile" dimension into
+# one combined dataset written to paths.binned_directory.
+#
+# [bin]
+
+# channel (default: "z"): the channel key to bin by. Any key valid in a
+# profile's channels, e.g. "z" (height, meters, negative in the ocean) or
+# "sea_pressure".
+# channel = "z"
+
+# step (default: 1.0): bin edge spacing, in channel's units. May be
+# negative for a decreasing grid, e.g. binning a downcast by "z" (which
+# decreases with depth). Must not be 0.
+# step = 1.0
+
+# first, last (optional, default: unset): the first bin edge, and the
+# edge to reach or pass. Edges are generated as first, first + step,
+# first + 2*step, ..., stopping at the first edge that reaches or passes
+# last -- unlike numpy.arange, the final bin may slightly overshoot last.
+# If unset, first/last are computed from the data actually being binned:
+# with step > 0, first defaults to the minimum and last to the maximum of
+# channel across every profile being binned; with step < 0, the reverse.
+# last must be on the correct side of first for step's sign (last >=
+# first when step > 0; last <= first when step < 0).
+# first = -500.0
+# last = 0.0
+
+# output_format (default: "netcdf"): file format for the combined,
+# binned dataset. "netcdf" writes a CF-compliant file via xarray +
+# h5netcdf, matching process.profile_format's "netcdf" option. "zarr"
+# writes a Zarr store instead.
+# output_format = "netcdf"
 
 # [instruments.<serial_number>] sections are optional and override
 # [process] settings for one specific instrument, identified by its

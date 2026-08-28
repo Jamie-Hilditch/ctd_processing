@@ -3,12 +3,52 @@
 import tomllib
 from pathlib import Path
 
+import numpy as np
 import pytest
 from typer.testing import CliRunner
 
 from ctd_processing.cli import app
+from ctd_processing.process.channel import Channel
+from ctd_processing.process.dataset import Dataset
+from ctd_processing.process.save import save_profile
 
 runner = CliRunner()
+
+
+def _write_profile(
+    directory: Path,
+    index: int,
+    total: int,
+    *,
+    start: str,
+    serial: int = 208532,
+    source_file: str = "243188_20260809_0304.rsk",
+) -> Path:
+    """Write one small, already-processed profile file for bin CLI tests."""
+    n = 5
+    time = Channel(
+        data=np.datetime64(start) + np.arange(n) * np.timedelta64(1, "s")
+    )
+    dataset = Dataset(time=time)
+    dataset.metadata.update(
+        {"instrument_serial_number": serial, "source_file": source_file}
+    )
+    dataset.add_channel(
+        "z", Channel(data=-np.linspace(0, 4, n), metadata={"units": "m"})
+    )
+    dataset.add_channel(
+        "sea_water_temperature",
+        Channel(data=np.linspace(10, 11, n), metadata={"units": "degree_C"}),
+    )
+    dataset.metadata.update(
+        {
+            "profile_start_time": time.data[0],
+            "profile_end_time": time.data[-1],
+            "latitude": 45.0,
+            "longitude": -125.0,
+        }
+    )
+    return save_profile(dataset, dataset, index, total, directory, "netcdf")
 
 
 def _other_paths(tmp_path: Path) -> list[str]:
@@ -267,10 +307,13 @@ def test_init_set_overrides_name_option(tmp_path: Path) -> None:
     assert config["project"]["name"] == "from-set"
 
 
-def test_bin_stub_reports_not_implemented(tmp_path: Path) -> None:
-    """Bin stub should report 'not yet implemented' and exit 1."""
-    input_path = tmp_path / "cast.rsk"
-    input_path.write_text("", encoding="utf-8")
+def test_bin_combines_profile_directory_into_one_dataset(
+    tmp_path: Path,
+) -> None:
+    """Bin on a directory of profiles writes one combined file, exit 0."""
+    profiles_dir = tmp_path / "profiles"
+    _write_profile(profiles_dir, 0, 2, start="2026-08-09T03:04:00")
+    _write_profile(profiles_dir, 1, 2, start="2026-08-09T04:04:00")
     rsk_dir = tmp_path / "rsk"
     rsk_dir.mkdir()
 
@@ -278,7 +321,53 @@ def test_bin_stub_reports_not_implemented(tmp_path: Path) -> None:
         app,
         [
             "bin",
-            str(input_path),
+            str(profiles_dir),
+            "--set",
+            f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        ]
+        + _other_paths(tmp_path),
+    )
+
+    assert result.exit_code == 0, result.stderr
+    written = list((tmp_path / "binned").glob("*.nc"))
+    assert len(written) == 1
+    assert "2 profile(s)" in result.stdout
+
+
+def test_bin_accepts_single_profile_file(tmp_path: Path) -> None:
+    """Bin on a single profile file (not a directory) also works."""
+    profiles_dir = tmp_path / "profiles"
+    path = _write_profile(profiles_dir, 0, 1, start="2026-08-09T03:04:00")
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "bin",
+            str(path),
+            "--set",
+            f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        ]
+        + _other_paths(tmp_path),
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert list((tmp_path / "binned").glob("*.nc"))
+
+
+def test_bin_empty_directory_errors(tmp_path: Path) -> None:
+    """A directory with no profile files exits 1 with a clean message."""
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "bin",
+            str(profiles_dir),
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -286,7 +375,37 @@ def test_bin_stub_reports_not_implemented(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 1
-    assert "not yet implemented" in result.stdout
+    assert "No profile files found" in result.stderr
+
+
+def test_bin_mixed_deployment_input_errors(tmp_path: Path) -> None:
+    """Profiles from different deployments exit 1 with a clean message."""
+    profiles_dir = tmp_path / "profiles"
+    _write_profile(profiles_dir, 0, 2, start="2026-08-09T03:04:00")
+    _write_profile(
+        profiles_dir,
+        1,
+        2,
+        start="2026-08-09T04:04:00",
+        serial=999999,
+        source_file="other_deployment.rsk",
+    )
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "bin",
+            str(profiles_dir),
+            "--set",
+            f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        ]
+        + _other_paths(tmp_path),
+    )
+
+    assert result.exit_code == 1
+    assert "multiple deployments" in result.stderr
 
 
 def test_concatenate_stub_reports_not_implemented(tmp_path: Path) -> None:
@@ -310,19 +429,17 @@ def test_concatenate_stub_reports_not_implemented(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("command", ["bin", "concatenate"])
-def test_stub_command_missing_input_path_errors(
+def test_command_missing_input_path_errors(
     tmp_path: Path, command: str
 ) -> None:
-    """A nonexistent input_path fails validation before the stub body runs."""
+    """A nonexistent input_path fails validation before the command runs."""
     result = runner.invoke(app, [command, str(tmp_path / "does-not-exist")])
 
     assert result.exit_code != 0
 
 
 @pytest.mark.parametrize("command", ["bin", "concatenate"])
-def test_stub_command_set_unknown_key_errors(
-    tmp_path: Path, command: str
-) -> None:
+def test_command_set_unknown_key_errors(tmp_path: Path, command: str) -> None:
     """--set with an unknown key exits non-zero with a clean message."""
     input_path = tmp_path / "cast.rsk"
     input_path.write_text("", encoding="utf-8")
@@ -332,7 +449,6 @@ def test_stub_command_set_unknown_key_errors(
     )
 
     assert result.exit_code == 1
-    assert "not yet implemented" not in result.stdout
     assert result.stderr != ""
 
 

@@ -606,6 +606,86 @@ class ProcessSettings(BaseModel):
     despike_channels: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
+class BinSettings(BaseModel):
+    """Settings specific to the ``bin`` command.
+
+    See `ctd_processing.process.binning`, which bins every profile passed
+    to ``bin`` onto a common grid along `channel`, averages every other
+    channel within each bin, and stacks the results along a new
+    ``profile`` dimension.
+
+    Attributes
+    ----------
+    channel : str
+        The channel key to bin by -- any key valid in
+        `ctd_processing.process.dataset.Dataset.channels` (e.g. ``"z"``,
+        ``"sea_pressure"``), not necessarily one of `Dataset.channels`
+        default set. Defaults to ``"z"`` (height, in meters, negative in
+        the ocean -- see
+        `ctd_processing.config.DerivedVariablesSettings.z`).
+    step : float
+        Bin edge spacing, in `channel`'s units. May be negative for a
+        decreasing grid, e.g. binning a downcast by `channel` ``"z"``,
+        which is negative and decreases with depth. Must not be ``0``.
+        Defaults to ``1.0``.
+    first : float or None
+        The first bin edge. Optional; if unset (the default), computed
+        from the data actually being binned: the minimum of `channel`
+        across every profile if `step` is positive, or the maximum if
+        `step` is negative.
+    last : float or None
+        The bin edge to reach or pass. Optional; if unset (the default),
+        computed the opposite way from `first`: the maximum of `channel`
+        across every profile if `step` is positive, or the minimum if
+        `step` is negative. Edges are generated as ``first``, ``first +
+        step``, ``first + 2 * step``, ... , stopping at the first edge
+        that reaches or passes `last` -- so, unlike `numpy.arange`, the
+        final bin may slightly overshoot `last`. Must be greater than or
+        equal to `first` if `step` is positive, or less than or equal to
+        `first` if `step` is negative.
+    output_format : {"netcdf", "zarr"}
+        File format for the combined, binned dataset written to
+        ``paths.binned_directory`` (see
+        `ctd_processing.process.binning.save_binned_dataset`).
+        ``"netcdf"`` (the default) writes a CF-compliant file via
+        `xarray` and `h5netcdf`, matching
+        `ProcessSettings.profile_format`'s ``"netcdf"`` option.
+        ``"zarr"`` writes a Zarr store instead.
+
+    Raises
+    ------
+    ValueError
+        If `step` is ``0``, or if `first`/`last` are both given and `last`
+        is on the wrong side of `first` for `step`'s sign.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    channel: str = "z"
+    step: float = 1.0
+    first: float | None = None
+    last: float | None = None
+    output_format: Literal["netcdf", "zarr"] = "netcdf"
+
+    @model_validator(mode="after")
+    def _validate_step_and_range(self) -> "BinSettings":
+        """Require a nonzero `step` and, if both are given, a valid range."""
+        if self.step == 0:
+            raise ValueError("step must not be 0.")
+        if self.first is not None and self.last is not None:
+            if self.step > 0 and self.last < self.first:
+                raise ValueError(
+                    f"last ({self.last}) must be >= first ({self.first}) "
+                    "when step > 0."
+                )
+            if self.step < 0 and self.last > self.first:
+                raise ValueError(
+                    f"last ({self.last}) must be <= first ({self.first}) "
+                    "when step < 0."
+                )
+        return self
+
+
 class InstrumentSettings(BaseModel):
     """Per-instrument overrides of `ProcessSettings`, keyed by serial number.
 
@@ -684,6 +764,9 @@ class Settings(BaseSettings):
     process : ProcessSettings
         Settings specific to the ``process`` command, e.g. `raw_channels`.
         Required, since `ProcessSettings.geolocation` has no default.
+    bin : BinSettings
+        Settings specific to the ``bin`` command, e.g. `channel`/`step`.
+        Optional; every field of `BinSettings` has a default.
     instruments : dict[str, InstrumentSettings]
         Per-instrument overrides of `process`, keyed by instrument serial
         number (see `InstrumentSettings`). Optional; defaults to an empty
@@ -704,6 +787,7 @@ class Settings(BaseSettings):
     project: ProjectSettings = Field(default_factory=ProjectSettings)
     paths: PathsSettings
     process: ProcessSettings
+    bin: BinSettings = Field(default_factory=BinSettings)
     instruments: dict[str, InstrumentSettings] = Field(default_factory=dict)
     deployments: dict[str, DeploymentSettings] = Field(default_factory=dict)
 
