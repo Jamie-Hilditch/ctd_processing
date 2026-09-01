@@ -165,7 +165,7 @@ def test_cli_log_level_controls_emitted_records(
 def test_cli_no_stdout_log_silences_log_records(
     tmp_path: Path, example_rsk_path: Path
 ) -> None:
-    """--no-stdout-log suppresses log output but not the stub's own message."""
+    """--no-stdout-log suppresses log output but not the summary message."""
     rsk_dir = tmp_path / "rsk"
     rsk_dir.mkdir()
     shutil.copy(example_rsk_path, rsk_dir / "deployment.rsk")
@@ -182,7 +182,7 @@ def test_cli_no_stdout_log_silences_log_records(
     )
 
     assert "Reading deployment" not in result.stdout
-    assert "not yet implemented" in result.stdout
+    assert "Processed 1 deployment(s)" in result.stdout
 
 
 @pytest.mark.requires_example_data

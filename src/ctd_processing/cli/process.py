@@ -1,4 +1,4 @@
-"""``process`` command (stub): process raw RBR .rsk deployment files."""
+"""``process`` command: process raw RBR .rsk deployment files."""
 
 from pathlib import Path
 from typing import Annotated
@@ -17,6 +17,28 @@ from ctd_processing.cli._options import (
     VerboseOption,
 )
 from ctd_processing.process import process_deployment_files
+
+
+def _format_error(exc: BaseException) -> str:
+    """Format `exc` for CLI display, appending any notes on their own lines.
+
+    Parameters
+    ----------
+    exc : BaseException
+        The exception to format, typically one collected from an
+        :class:`ExceptionGroup` raised by
+        :func:`ctd_processing.process.process_deployment_files`.
+
+    Returns
+    -------
+    str
+        `str(exc)`, followed by each of `exc`'s notes (see
+        `BaseException.add_note`) on its own line, if any.
+    """
+    notes = getattr(exc, "__notes__", None)
+    if not notes:
+        return str(exc)
+    return "\n".join([str(exc), *notes])
 
 
 def resolve_deployment_files(
@@ -103,14 +125,14 @@ def process_command(
 ) -> None:
     """Process raw RBR .rsk deployments into derived oceanographic variables.
 
-    Not yet implemented. This is a scaffolding stub: it validates its
-    arguments, loads configuration, resolves which deployment files
-    would be processed, dispatches them to
-    :func:`ctd_processing.process.process_deployment_files` (which
-    currently only reads each deployment; profile extraction is not
-    yet implemented), and reports that no processing has occurred, so
-    that the command is registered, documented, and testable ahead of
-    the real pyrsktools/gsw-based implementation.
+    Resolves which deployment files to process (see
+    `resolve_deployment_files`), then dispatches them to
+    `ctd_processing.process.process_deployment_files`, which extracts
+    profiles from each deployment and writes them into
+    ``profiles_directory``. Every resolved deployment is attempted
+    regardless of an earlier one's failure; failures are collected and
+    reported together, once every deployment has been attempted, as a
+    single non-zero exit.
 
     Parameters
     ----------
@@ -146,9 +168,9 @@ def process_command(
     typer.Exit
         Raised with exit code 1 if `set_` produces invalid settings, if
         `target` cannot be resolved against ``rsk_directory`` (see
-        :func:`resolve_deployment_files`), or unconditionally once
-        deployment files have been resolved, since
-        processing is not yet implemented.
+        `resolve_deployment_files`), or if any resolved deployment
+        failed to copy or process (see
+        `ctd_processing.process.process_deployment_files`).
     """
     configure_cli_logging(log_level, verbose, debug, no_stdout_log)
     settings = resolve_settings(config, set_ or [])
@@ -161,15 +183,18 @@ def process_command(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
-    process_deployment_files(
-        deployment_files,
-        settings.paths.profiles_directory,
-        settings,
-    )
+    try:
+        process_deployment_files(
+            deployment_files,
+            settings.paths.profiles_directory,
+            settings,
+        )
+    except ExceptionGroup as exc:
+        for error in exc.exceptions:
+            typer.echo(_format_error(error), err=True)
+        raise typer.Exit(code=1) from exc
 
-    listing = "\n".join(f"  {path}" for path in deployment_files)
     typer.echo(
-        f"'process' is not yet implemented (settings={settings!r}). "
-        f"Resolved deployment files:\n{listing}"
+        f"Processed {len(deployment_files)} deployment(s) into "
+        f"{settings.paths.profiles_directory}"
     )
-    raise typer.Exit(code=1)

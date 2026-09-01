@@ -647,9 +647,11 @@ def test_bin_set_unknown_key_errors(tmp_path: Path) -> None:
 def test_process_explicit_targets_reports_resolved_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Process --target should resolve only the named .rsk files."""
+    """Process --target should dispatch only the named .rsk files."""
+    calls: list[list[Path]] = []
     monkeypatch.setattr(
-        "ctd_processing.cli.process.process_deployment_files", lambda *a: None
+        "ctd_processing.cli.process.process_deployment_files",
+        lambda deployment_files, *a: calls.append(deployment_files),
     )
     rsk_dir = tmp_path / "rsk"
     rsk_dir.mkdir()
@@ -668,19 +670,19 @@ def test_process_explicit_targets_reports_resolved_files(
         + ["--target", "a.rsk", "--target", "b.rsk"],
     )
 
-    assert result.exit_code == 1
-    assert "not yet implemented" in result.stdout
-    assert "a.rsk" in result.stdout
-    assert "b.rsk" in result.stdout
-    assert "c.txt" not in result.stdout
+    assert result.exit_code == 0
+    assert "Processed 2 deployment(s)" in result.stdout
+    assert [path.name for path in calls[0]] == ["a.rsk", "b.rsk"]
 
 
 def test_process_auto_discovers_targets_when_omitted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Process with no --target auto-discovers top-level .rsk files."""
+    calls: list[list[Path]] = []
     monkeypatch.setattr(
-        "ctd_processing.cli.process.process_deployment_files", lambda *a: None
+        "ctd_processing.cli.process.process_deployment_files",
+        lambda deployment_files, *a: calls.append(deployment_files),
     )
     rsk_dir = tmp_path / "rsk"
     rsk_dir.mkdir()
@@ -701,11 +703,9 @@ def test_process_auto_discovers_targets_when_omitted(
         + _other_paths(tmp_path),
     )
 
-    assert result.exit_code == 1
-    assert "a.rsk" in result.stdout
-    assert "b.rsk" in result.stdout
-    assert "nested.rsk" not in result.stdout
-    assert result.stdout.index("a.rsk") < result.stdout.index("b.rsk")
+    assert result.exit_code == 0
+    assert "Processed 2 deployment(s)" in result.stdout
+    assert [path.name for path in calls[0]] == ["a.rsk", "b.rsk"]
 
 
 def test_process_set_unknown_key_errors(tmp_path: Path) -> None:
@@ -725,7 +725,6 @@ def test_process_set_unknown_key_errors(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 1
-    assert "not yet implemented" not in result.stdout
     assert result.stderr != ""
 
 
@@ -753,7 +752,44 @@ def test_process_uses_default_config_in_cwd(
 
     result = runner.invoke(app, ["process"])
 
-    assert "not yet implemented" in result.stdout
+    assert result.exit_code == 0
+    assert "Processed 1 deployment(s)" in result.stdout
+
+
+def test_process_reports_failed_deployments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed deployment is reported on stderr with a non-zero exit."""
+
+    def fake_process_deployment_files(
+        deployment_files, profiles_directory, settings
+    ):
+        error = ValueError("boom")
+        error.add_note("while processing deployment: bad.rsk")
+        raise ExceptionGroup("Failed to process 1 of 1 deployment(s).", [error])
+
+    monkeypatch.setattr(
+        "ctd_processing.cli.process.process_deployment_files",
+        fake_process_deployment_files,
+    )
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+    (rsk_dir / "bad.rsk").write_text("", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "--set",
+            f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        ]
+        + _other_paths(tmp_path),
+    )
+
+    assert result.exit_code == 1
+    assert "boom" in result.stderr
+    assert "while processing deployment: bad.rsk" in result.stderr
+    assert "Processed" not in result.stdout
 
 
 def test_process_missing_default_config_errors(
@@ -783,5 +819,4 @@ def test_process_missing_rsk_directory_errors(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 1
-    assert "not yet implemented" not in result.stdout
     assert str(missing_dir) in result.stderr
