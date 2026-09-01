@@ -3,20 +3,18 @@
 See `ctd_processing.config.ProcessSettings.profile_format`. `save_profile`
 writes one already-extracted, already-processed profile `Dataset` out via
 `ctd_processing.process.save_netcdf.write_netcdf` or
-`ctd_processing.process.save_parquet.write_parquet`. `load_profile` reverses
-that: it reads a single saved profile file back into a `Dataset`. Extracting
-a profile out of a full deployment `Dataset` (`Dataset.subset`) and
-processing it (see `ctd_processing.process.process_profile`) both happen
-before `save_profile` is called -- see
-`ctd_processing.process.process_deployment`.
+`ctd_processing.process.save_parquet.write_parquet`, into a per-deployment
+subdirectory of the given profiles directory. `load_profile` reverses that:
+it reads a single saved profile file back into a `Dataset`. Extracting a
+profile out of a full deployment `Dataset` (`Dataset.subset`) and processing
+it (see `ctd_processing.process.process_profile`) both happen before
+`save_profile` is called -- see `ctd_processing.process.process_deployment`.
 """
 
 import logging
 from pathlib import Path
-from typing import Literal
 
-import numpy as np
-
+from ctd_processing.config import ProcessSettings
 from ctd_processing.process.dataset import Dataset
 from ctd_processing.process.save_netcdf import read_netcdf, write_netcdf
 from ctd_processing.process.save_parquet import read_parquet, write_parquet
@@ -26,28 +24,17 @@ logger = logging.getLogger(__name__)
 __all__ = ["load_profile", "profile_filename", "save_profile"]
 
 
-def profile_filename(
-    dataset: Dataset,
-    profile_dataset: Dataset,
-    index: int,
-    total: int,
-    extension: str,
-) -> str:
-    """Build a unique, informative filename for one extracted profile.
+def profile_filename(dataset: Dataset, index: int, extension: str) -> str:
+    """Build the filename for one extracted profile.
 
     Parameters
     ----------
     dataset : Dataset
         The full deployment dataset the profile was extracted from,
-        supplying ``instrument_serial_number`` and ``source_file`` from
-        its `Dataset.metadata`.
-    profile_dataset : Dataset
-        The extracted profile itself, supplying its first timestamp.
+        supplying its deployment stem via ``source_file`` in
+        `Dataset.metadata`.
     index : int
         The profile's 0-based position within `dataset`.
-    total : int
-        The number of profiles identified in `dataset`. Only used to
-        size `index`'s zero-padding so it never truncates.
     extension : str
         The filename extension to use, without a leading dot (e.g.
         ``"parquet"`` or ``"nc"``).
@@ -55,34 +42,30 @@ def profile_filename(
     Returns
     -------
     str
-        E.g. ``"208532_243188_20260809_0304_p000_20260809T030412.parquet"``.
+        E.g. ``"243188_20260809_0304_p0000.parquet"``.
     """
-    serial_number = dataset.metadata["instrument_serial_number"]
     deployment_stem = Path(dataset.metadata["source_file"]).stem
-    width = max(3, len(str(total)))
-    start = np.datetime_as_string(profile_dataset.time.data[0], unit="s")
-    start = start.replace("-", "").replace(":", "")
-    return (
-        f"{serial_number}_{deployment_stem}_p{index:0{width}d}_{start}"
-        f".{extension}"
-    )
+    return f"{deployment_stem}_p{index:04d}.{extension}"
 
 
 def save_profile(
     dataset: Dataset,
     profile_dataset: Dataset,
     index: int,
-    total: int,
     directory: Path,
-    format: Literal["netcdf", "parquet"],
+    process_settings: ProcessSettings,
 ) -> Path:
-    """Write one already-extracted, already-processed profile to `directory`.
+    """Write one already-extracted, already-processed profile under `directory`.
 
     Purely responsible for naming and writing `profile_dataset` -- by the
     time this is called, `profile_dataset` has already been extracted from
     the full deployment `Dataset` (`Dataset.subset`) and processed (see
     `ctd_processing.process.process_profile`), typically by
-    `ctd_processing.process.process_deployment`.
+    `ctd_processing.process.process_deployment`. Written into a
+    subdirectory of `directory` named after the deployment's ``.rsk`` stem
+    (see `profile_filename`), so every profile from one deployment lands
+    together -- the shape `ctd_processing.cli.bin.bin_command` expects for
+    its own `input_path`.
 
     Parameters
     ----------
@@ -94,32 +77,34 @@ def save_profile(
     index : int
         The profile's 0-based position within `dataset`, forwarded to
         `profile_filename`.
-    total : int
-        The number of profiles identified in `dataset`, forwarded to
-        `profile_filename`.
     directory : pathlib.Path
-        Directory to write the profile file into. Created (including any
-        missing parents) if it does not already exist.
-    format : {"netcdf", "parquet"}
-        File format to write the profile as (see
-        `ctd_processing.config.ProcessSettings.profile_format`).
+        Base profiles directory. The profile is actually written into
+        ``directory / deployment_stem``, created (including any missing
+        parents) if it does not already exist.
+    process_settings : ProcessSettings
+        Supplies `process_settings.profile_format` (the file format to
+        write the profile as) and, forwarded to `write_netcdf`/
+        `write_parquet`, `process_settings.output_dtype`/`channels` (each
+        channel's output dtype -- see
+        `ctd_processing.config.resolve_output_dtype`).
 
     Returns
     -------
     pathlib.Path
         The path the profile was written to.
     """
-    directory.mkdir(parents=True, exist_ok=True)
+    deployment_stem = Path(dataset.metadata["source_file"]).stem
+    deployment_directory = directory / deployment_stem
+    deployment_directory.mkdir(parents=True, exist_ok=True)
+    format = process_settings.profile_format
     extension = "nc" if format == "netcdf" else "parquet"
 
-    filename = profile_filename(
-        dataset, profile_dataset, index, total, extension
-    )
-    path = directory / filename
+    filename = profile_filename(dataset, index, extension)
+    path = deployment_directory / filename
     if format == "netcdf":
-        write_netcdf(profile_dataset, path)
+        write_netcdf(profile_dataset, path, process_settings)
     else:
-        write_parquet(profile_dataset, path)
+        write_parquet(profile_dataset, path, process_settings)
     return path
 
 

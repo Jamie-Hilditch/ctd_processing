@@ -6,12 +6,23 @@ import numpy as np
 import pytest
 
 import ctd_processing.process.save as save_module
+from ctd_processing.config import GeolocationSettings, ProcessSettings
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
 from ctd_processing.process.save import (
     load_profile,
     profile_filename,
     save_profile,
+)
+
+_GEOLOCATION = GeolocationSettings(
+    reference_latitude=0.0, reference_longitude=0.0
+)
+_PARQUET_SETTINGS = ProcessSettings(
+    geolocation=_GEOLOCATION, profile_format="parquet"
+)
+_NETCDF_SETTINGS = ProcessSettings(
+    geolocation=_GEOLOCATION, profile_format="netcdf"
 )
 
 
@@ -41,50 +52,48 @@ def _dataset(n: int = 10) -> Dataset:
 
 
 def test_profile_filename_shape() -> None:
-    """profile_filename builds the expected serial_stem_pIDX_start.ext shape."""
+    """profile_filename builds the expected stem_pIDX shape."""
     dataset = _dataset()
-    profile_dataset = dataset.subset(slice(0, 5), "test subset")
 
-    filename = profile_filename(dataset, profile_dataset, 0, 1, "parquet")
+    filename = profile_filename(dataset, 0, "parquet")
 
-    assert (
-        filename == "208532_243188_20260809_0304_p000_20260809T030412.parquet"
-    )
+    assert filename == "243188_20260809_0304_p0000.parquet"
 
 
 def test_profile_filename_differs_by_index() -> None:
     """Two profiles from the same dataset get different filenames."""
     dataset = _dataset()
-    first = dataset.subset(slice(0, 5), "first")
-    second = dataset.subset(slice(5, 10), "second")
 
-    name0 = profile_filename(dataset, first, 0, 2, "nc")
-    name1 = profile_filename(dataset, second, 1, 2, "nc")
+    name0 = profile_filename(dataset, 0, "nc")
+    name1 = profile_filename(dataset, 1, "nc")
 
     assert name0 != name1
     assert name0.endswith(".nc")
 
 
-def test_profile_filename_pads_index_to_total_width() -> None:
-    """Index padding widens beyond 3 digits when total requires it."""
+def test_profile_filename_pads_index_to_four_digits() -> None:
+    """Index padding is always (at least) four digits, regardless of total."""
     dataset = _dataset()
-    profile_dataset = dataset.subset(slice(0, 5), "test subset")
 
-    filename = profile_filename(dataset, profile_dataset, 7, 1234, "parquet")
+    filename = profile_filename(dataset, 7, "parquet")
 
-    assert "_p0007_" in filename
+    assert filename == "243188_20260809_0304_p0007.parquet"
 
 
 def _stub_writers(monkeypatch: pytest.MonkeyPatch) -> dict:
     """Replace write_netcdf/write_parquet with recording stubs."""
     calls: dict = {"netcdf": [], "parquet": []}
 
-    def fake_write_netcdf(dataset: Dataset, path: Path) -> Path:
-        calls["netcdf"].append((dataset, path))
+    def fake_write_netcdf(
+        dataset: Dataset, path: Path, process_settings: ProcessSettings
+    ) -> Path:
+        calls["netcdf"].append((dataset, path, process_settings))
         return path
 
-    def fake_write_parquet(dataset: Dataset, path: Path) -> Path:
-        calls["parquet"].append((dataset, path))
+    def fake_write_parquet(
+        dataset: Dataset, path: Path, process_settings: ProcessSettings
+    ) -> Path:
+        calls["parquet"].append((dataset, path, process_settings))
         return path
 
     monkeypatch.setattr(save_module, "write_netcdf", fake_write_netcdf)
@@ -95,12 +104,14 @@ def _stub_writers(monkeypatch: pytest.MonkeyPatch) -> dict:
 def test_save_profile_dispatches_to_parquet_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """format="parquet" calls write_parquet, not write_netcdf."""
+    """profile_format="parquet" calls write_parquet, not write_netcdf."""
     calls = _stub_writers(monkeypatch)
     dataset = _dataset(10)
     profile_dataset = dataset.subset(slice(0, 5), "test subset")
 
-    path = save_profile(dataset, profile_dataset, 0, 2, tmp_path, "parquet")
+    path = save_profile(
+        dataset, profile_dataset, 0, tmp_path, _PARQUET_SETTINGS
+    )
 
     assert len(calls["parquet"]) == 1
     assert not calls["netcdf"]
@@ -110,12 +121,12 @@ def test_save_profile_dispatches_to_parquet_writer(
 def test_save_profile_dispatches_to_netcdf_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """format="netcdf" calls write_netcdf, not write_parquet."""
+    """profile_format="netcdf" calls write_netcdf, not write_parquet."""
     calls = _stub_writers(monkeypatch)
     dataset = _dataset(10)
     profile_dataset = dataset.subset(slice(0, 5), "test subset")
 
-    path = save_profile(dataset, profile_dataset, 0, 2, tmp_path, "netcdf")
+    path = save_profile(dataset, profile_dataset, 0, tmp_path, _NETCDF_SETTINGS)
 
     assert len(calls["netcdf"]) == 1
     assert not calls["parquet"]
@@ -130,37 +141,42 @@ def test_save_profile_passes_profile_dataset_to_writer(
     dataset = _dataset(10)
     profile_dataset = dataset.subset(slice(0, 5), "test subset")
 
-    save_profile(dataset, profile_dataset, 0, 2, tmp_path, "parquet")
+    save_profile(dataset, profile_dataset, 0, tmp_path, _PARQUET_SETTINGS)
 
-    written_dataset, _ = calls["parquet"][0]
+    written_dataset, _, _ = calls["parquet"][0]
     assert written_dataset is profile_dataset
 
 
 def test_save_profile_creates_missing_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """save_profile creates `directory` if it doesn't already exist."""
+    """save_profile creates the deployment subdirectory if it doesn't exist."""
     _stub_writers(monkeypatch)
     dataset = _dataset(10)
     profile_dataset = dataset.subset(slice(0, 5), "test subset")
     directory = tmp_path / "profiles" / "nested"
 
-    save_profile(dataset, profile_dataset, 0, 1, directory, "parquet")
+    path = save_profile(
+        dataset, profile_dataset, 0, directory, _PARQUET_SETTINGS
+    )
 
-    assert directory.is_dir()
+    assert path.parent.is_dir()
 
 
-def test_save_profile_returns_path_under_directory(
+def test_save_profile_writes_into_deployment_stem_subdirectory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The returned path is inside `directory`."""
+    """The profile lands under directory/<deployment_stem>/, not directory."""
     _stub_writers(monkeypatch)
     dataset = _dataset(10)
     profile_dataset = dataset.subset(slice(0, 5), "test subset")
 
-    path = save_profile(dataset, profile_dataset, 0, 1, tmp_path, "parquet")
+    path = save_profile(
+        dataset, profile_dataset, 0, tmp_path, _PARQUET_SETTINGS
+    )
 
-    assert path.parent == tmp_path
+    assert path.parent == tmp_path / "243188_20260809_0304"
+    assert path.name == "243188_20260809_0304_p0000.parquet"
 
 
 def test_load_profile_dispatches_to_read_netcdf(

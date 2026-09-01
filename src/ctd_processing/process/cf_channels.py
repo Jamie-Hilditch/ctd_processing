@@ -222,9 +222,54 @@ def _slugify(text: str) -> str:
     Returns
     -------
     str
-        E.g. ``"Sea water temperature"`` -> ``"sea_water_temperature"``.
+        E.g. ``"Absolute pressure"`` -> ``"absolute_pressure"``. Purely
+        textual -- unlike `channel_key_for_longname`, this does not drop
+        a redundant "sea water" qualifier (see
+        `_drop_redundant_sea_water`).
     """
     return _NON_ALNUM.sub("_", text.lower()).strip("_")
+
+
+def _drop_redundant_sea_water(slug: str) -> str:
+    """Drop a "sea water" token pair from an already-`_slugify`d string.
+
+    Every channel this package handles is a sea water measurement, so a
+    "sea_water" qualifier in a channel *key* (as opposed to its CF
+    `long_name`/`standard_name`, which are left untouched -- see
+    `channel_key_for_longname`) is redundant. Also drops an immediately
+    preceding ``"in"`` token (e.g. the ``"..._in_sea_water"`` shape of a
+    slugified "... in sea water"), since it only exists to introduce the
+    dropped phrase.
+
+    Parameters
+    ----------
+    slug : str
+        An already-`_slugify`d string.
+
+    Returns
+    -------
+    str
+        `slug` with its first ``"sea"``/``"water"`` token pair (and any
+        immediately preceding ``"in"`` token) removed. Returned
+        unchanged if `slug` has no such token pair, or if removing it
+        would leave nothing behind (e.g. `slug` is just ``"sea_water"``
+        on its own).
+    """
+    tokens = slug.split("_")
+    result: list[str] = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index : index + 2] == ["sea", "water"]:
+            if result and result[-1] == "in":
+                result.pop()
+            index += 2
+            continue
+        result.append(tokens[index])
+        index += 1
+
+    if not result:
+        return slug
+    return "_".join(result)
 
 
 def channel_key_for_longname(long_name: str) -> str:
@@ -237,7 +282,13 @@ def channel_key_for_longname(long_name: str) -> str:
     which makes them a poor fit for a dict key, a config-section name, or
     anything else meant to be typed by a person. Instead this slugifies
     the channel's CF-style `long_name`, which this module already defines
-    to be short and unique per channel.
+    to be short and unique per channel, and then drops any redundant
+    "sea water" qualifier from *that key* via
+    `_drop_redundant_sea_water` -- every channel here is already a sea
+    water measurement, so spelling that out in every key is just noise.
+    The channel's own `long_name`/`standard_name` metadata (see
+    `cf_metadata_for_longname`) is unaffected; only this short key drops
+    it.
 
     `Dataset.channels` (`ctd_processing.process.build.build_dataset`) and
     `process.raw_channels` config sections
@@ -254,10 +305,12 @@ def channel_key_for_longname(long_name: str) -> str:
     Returns
     -------
     str
-        E.g. ``"temperature"`` -> ``"sea_water_temperature"``,
-        ``"dissolved_o2_concentration"`` ->
-        ``"dissolved_oxygen_concentration"``. For a `long_name` this
+        E.g. ``"temperature"`` -> ``"temperature"`` (from CF `long_name`
+        ``"Sea water temperature"``), ``"conductivity"`` ->
+        ``"electrical_conductivity"``, ``"dissolved_o2_concentration"``
+        -> ``"dissolved_oxygen_concentration"``. For a `long_name` this
         module doesn't recognize, slugifies pyrsktools' own (already
         snake_case) identifier, which is usually a no-op.
     """
-    return _slugify(cf_metadata_for_longname(long_name).long_name)
+    slug = _slugify(cf_metadata_for_longname(long_name).long_name)
+    return _drop_redundant_sea_water(slug)

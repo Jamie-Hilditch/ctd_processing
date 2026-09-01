@@ -17,7 +17,7 @@ _DERIVED_KEYS = (
     "conservative_temperature",
     "density_anomaly",
     "potential_temperature",
-    "speed_of_sound_in_sea_water",
+    "speed_of_sound",
     "sea_water_density",
     "spiciness",
     "freezing_point",
@@ -49,9 +49,9 @@ def _dataset(
     """Build a Dataset with the channels/metadata this module's step needs."""
     dataset = Dataset(time=Channel(data=np.arange(float(n))))
     dataset.add_channel(
-        "sea_water_electrical_conductivity", Channel(data=np.full(n, 35.0))
+        "electrical_conductivity", Channel(data=np.full(n, 35.0))
     )
-    dataset.add_channel("sea_water_temperature", Channel(data=np.full(n, 10.0)))
+    dataset.add_channel("temperature", Channel(data=np.full(n, 10.0)))
     dataset.add_channel("sea_pressure", Channel(data=np.arange(float(n))))
     if latitude is not None:
         dataset.metadata["latitude"] = latitude
@@ -105,7 +105,7 @@ def test_compute_derived_variables_adds_core_five_by_default(
         assert key in result.channels
     for key in (
         "potential_temperature",
-        "speed_of_sound_in_sea_water",
+        "speed_of_sound",
         "sea_water_density",
         "spiciness",
         "freezing_point",
@@ -125,7 +125,7 @@ def test_compute_derived_variables_adds_core_five_by_default(
         ("conservative_temperature", "conservative_temperature"),
         ("potential_density", "density_anomaly"),
         ("potential_temperature", "potential_temperature"),
-        ("sound_speed", "speed_of_sound_in_sea_water"),
+        ("sound_speed", "speed_of_sound"),
         ("density", "sea_water_density"),
         ("spiciness", "spiciness"),
         ("freezing_point", "freezing_point"),
@@ -171,8 +171,8 @@ def test_compute_derived_variables_overwrites_existing_channel(
     assert "source" not in salinity.metadata
     assert salinity.metadata["standard_name"] == "sea_water_practical_salinity"
     expected = (
-        result.channels["sea_water_electrical_conductivity"].data
-        - result.channels["sea_water_temperature"].data
+        result.channels["electrical_conductivity"].data
+        - result.channels["temperature"].data
     )
     np.testing.assert_array_equal(salinity.data, expected)
 
@@ -180,8 +180,8 @@ def test_compute_derived_variables_overwrites_existing_channel(
 @pytest.mark.parametrize(
     "missing_channel",
     [
-        "sea_water_electrical_conductivity",
-        "sea_water_temperature",
+        "electrical_conductivity",
+        "temperature",
         "sea_pressure",
     ],
 )
@@ -241,11 +241,11 @@ def test_compute_derived_variables_oxygen_concentration_from_saturation(
         == "mole_concentration_of_dissolved_molecular_oxygen_in_sea_water"
     )
     sa = (
-        result.channels["sea_water_electrical_conductivity"].data
-        - result.channels["sea_water_temperature"].data
+        result.channels["electrical_conductivity"].data
+        - result.channels["temperature"].data
         + 1.0
     )
-    ct = result.channels["sea_water_temperature"].data + 1.0
+    ct = result.channels["temperature"].data + 1.0
     p = result.channels["sea_pressure"].data
     solubility = (
         sa + ct + p + result.metadata["longitude"] + result.metadata["latitude"]
@@ -266,7 +266,7 @@ def test_compute_derived_variables_despikes_before_deriving_downstream(
     """
     _stub_gsw(monkeypatch)
     dataset = _dataset(n=5)
-    dataset.channels["sea_water_electrical_conductivity"].data[2] = 350.0
+    dataset.channels["electrical_conductivity"].data[2] = 350.0
     despike = {
         "practical_salinity": DespikeSettings(threshold=2.0, window_length=3)
     }
@@ -290,12 +290,29 @@ def test_compute_derived_variables_without_despike_spike_propagates(
     """
     _stub_gsw(monkeypatch)
     dataset = _dataset(n=5)
-    dataset.channels["sea_water_electrical_conductivity"].data[2] = 350.0
+    dataset.channels["electrical_conductivity"].data[2] = 350.0
 
     result = compute_derived_variables(dataset, DerivedVariablesSettings())
 
     assert result.channels["practical_salinity"].data[2] == 340.0
     assert result.channels["absolute_salinity"].data[2] == 341.0
+
+
+def test_compute_derived_variables_logs_zero_count_when_nothing_despiked(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A 0-count VERBOSE record is logged even when nothing was despiked."""
+    _stub_gsw(monkeypatch)
+    dataset = _dataset(n=5)
+    despike = {
+        "practical_salinity": DespikeSettings(threshold=2.0, window_length=3)
+    }
+    caplog.set_level(VERBOSE, logger="ctd_processing.process.derived_variables")
+
+    compute_derived_variables(dataset, DerivedVariablesSettings(), despike)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "despiked practical_salinity: 0 point(s)" in messages
 
 
 def test_compute_derived_variables_records_history_with_added_keys(

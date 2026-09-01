@@ -4,22 +4,29 @@ import pytest
 from pydantic import ValidationError
 
 from ctd_processing.config import (
+    BinSettings,
+    ChannelSettings,
     CTLagSettings,
     DeploymentSettings,
     DerivedVariablesSettings,
+    DespikeChannelOverride,
     DespikeSettings,
     GeolocationSettings,
     InstrumentSettings,
+    NetcdfCompressionSettings,
+    ParquetCompressionSettings,
     PathsSettings,
     ProcessSettings,
     ProfileSettings,
     ProjectSettings,
     RawChannelSettings,
     Settings,
+    ZarrCompressionSettings,
     load_settings,
     merge_overrides,
     parse_overrides,
     resolve_despike_settings,
+    resolve_output_dtype,
     resolve_process_settings,
 )
 
@@ -480,6 +487,64 @@ def test_load_settings_keeps_absolute_log_files_from_file(tmp_path) -> None:
     assert settings.paths.error_log_file == error_log_file
 
 
+def test_load_settings_concatenated_file_defaults_to_none(tmp_path) -> None:
+    """concatenated_file defaults to None when omitted."""
+    settings = load_settings(
+        set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
+        + _other_paths(tmp_path)
+    )
+    assert settings.paths.concatenated_file is None
+
+
+def test_load_settings_resolves_relative_concatenated_file(
+    tmp_path,
+) -> None:
+    """A relative concatenated_file resolves against the config parent."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_path = project_dir / "config.toml"
+    config_path.write_text(
+        "[paths]\n"
+        'rsk_directory = "rsk_files"\n'
+        'profiles_directory = "profiles_files"\n'
+        'binned_directory = "binned_files"\n'
+        'concatenated_file = "concatenated.nc"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.paths.concatenated_file == project_dir / "concatenated.nc"
+
+
+def test_load_settings_keeps_absolute_concatenated_file_from_file(
+    tmp_path,
+) -> None:
+    """An absolute concatenated_file value is left untouched."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    config_path = project_dir / "config.toml"
+    concatenated_file = tmp_path / "elsewhere" / "concatenated.nc"
+    config_path.write_text(
+        "[paths]\n"
+        'rsk_directory = "rsk_files"\n'
+        'profiles_directory = "profiles_files"\n'
+        'binned_directory = "binned_files"\n'
+        f'concatenated_file = "{concatenated_file.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.paths.concatenated_file == concatenated_file
+
+
 def test_load_settings_missing_file_raises(tmp_path) -> None:
     """A nonexistent config path should raise FileNotFoundError."""
     with pytest.raises(FileNotFoundError):
@@ -504,6 +569,39 @@ def test_load_settings_propagates_malformed_override() -> None:
     """A malformed --set pair raises ValueError, not a validation error."""
     with pytest.raises(ValueError, match="expected key=value"):
         load_settings(set_=["not-a-pair"])
+
+
+def test_process_read_channels_defaults_to_empty(tmp_path) -> None:
+    """process.read_channels defaults to [] when omitted."""
+    settings = load_settings(
+        set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
+        + _other_paths(tmp_path)
+    )
+    assert settings.process.read_channels == []
+
+
+def test_process_read_channels_can_be_set(tmp_path) -> None:
+    """process.read_channels parses as a list of RBR channel longNames."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
+        "[process]\n"
+        'read_channels = ["temperature", "conductivity"]\n',
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.process.read_channels == ["temperature", "conductivity"]
 
 
 def test_process_raw_channels_defaults_to_empty(tmp_path) -> None:
@@ -695,6 +793,7 @@ def test_process_profiles_fields_can_be_set(tmp_path) -> None:
         "min_pressure = 0.5\n"
         "peak_height = 10.0\n"
         'direction = "both"\n'
+        'speed_threshold_direction = "down"\n'
         "apply_speed_threshold = true\n",
         encoding="utf-8",
     )
@@ -704,6 +803,7 @@ def test_process_profiles_fields_can_be_set(tmp_path) -> None:
     assert settings.process.profiles.min_pressure == 0.5
     assert settings.process.profiles.peak_height == 10.0
     assert settings.process.profiles.direction == "both"
+    assert settings.process.profiles.speed_threshold_direction == "down"
     assert settings.process.profiles.apply_speed_threshold is True
 
 
@@ -746,6 +846,31 @@ def test_process_profiles_rejects_invalid_direction(tmp_path) -> None:
         "reference_longitude = 0.0\n"
         "[process.profiles]\n"
         'direction = "sideways"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+def test_process_profiles_rejects_invalid_speed_threshold_direction(
+    tmp_path,
+) -> None:
+    """An invalid speed_threshold_direction value fails validation."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
+        "[process.profiles]\n"
+        'speed_threshold_direction = "sideways"\n',
         encoding="utf-8",
     )
 
@@ -958,21 +1083,21 @@ def test_despike_settings_rejects_even_window_length() -> None:
         DespikeSettings(window_length=4)
 
 
-def test_process_despike_defaults(tmp_path) -> None:
-    """process.despike/despike_channels default to DespikeSettings()/{}."""
+def test_process_despiking_defaults(tmp_path) -> None:
+    """process.despiking defaults to DespikeSettings(), channels to {}."""
     settings = load_settings(
         set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
         + _other_paths(tmp_path)
     )
-    assert settings.process.despike == DespikeSettings()
-    assert settings.process.despike_channels == {}
+    assert settings.process.despiking == DespikeSettings()
+    assert settings.process.channels == {}
 
 
 def test_resolve_despike_settings_omits_unconfigured_channels() -> None:
-    """A channel with no despike_channels entry has no resolved settings."""
+    """A channel with despike left at False has no resolved settings."""
     process_settings = ProcessSettings(
         geolocation=_GEOLOCATION,
-        despike_channels={"practical_salinity": {}},
+        channels={"practical_salinity": ChannelSettings(despike=True)},
     )
 
     resolved = resolve_despike_settings(process_settings)
@@ -981,12 +1106,12 @@ def test_resolve_despike_settings_omits_unconfigured_channels() -> None:
     assert "sea_water_temperature" not in resolved
 
 
-def test_resolve_despike_settings_uses_defaults_for_empty_override() -> None:
-    """An empty despike_channels entry uses despike's defaults as-is."""
+def test_resolve_despike_settings_uses_defaults_for_plain_true() -> None:
+    """Despike = true uses despiking's project-wide defaults as-is."""
     process_settings = ProcessSettings(
         geolocation=_GEOLOCATION,
-        despike=DespikeSettings(threshold=3.0, window_length=5),
-        despike_channels={"practical_salinity": {}},
+        despiking=DespikeSettings(threshold=3.0, window_length=5),
+        channels={"practical_salinity": ChannelSettings(despike=True)},
     )
 
     resolved = resolve_despike_settings(process_settings)
@@ -1000,8 +1125,13 @@ def test_resolve_despike_settings_merges_partial_override() -> None:
     """A partial per-channel override changes only the given fields."""
     process_settings = ProcessSettings(
         geolocation=_GEOLOCATION,
-        despike=DespikeSettings(threshold=2.0, window_length=5),
-        despike_channels={"practical_salinity": {"threshold": 4.0}},
+        despiking=DespikeSettings(threshold=2.0, window_length=5),
+        channels={
+            "practical_salinity": ChannelSettings(
+                despike=True,
+                despiking=DespikeChannelOverride(threshold=4.0),
+            )
+        },
     )
 
     resolved = resolve_despike_settings(process_settings)
@@ -1010,10 +1140,28 @@ def test_resolve_despike_settings_merges_partial_override() -> None:
     assert resolved["practical_salinity"].window_length == 5
 
 
+def test_resolve_despike_settings_ignores_despiking_when_despike_false() -> (
+    None
+):
+    """A despiking override has no effect unless despike is True."""
+    process_settings = ProcessSettings(
+        geolocation=_GEOLOCATION,
+        channels={
+            "practical_salinity": ChannelSettings(
+                despiking=DespikeChannelOverride(threshold=4.0)
+            )
+        },
+    )
+
+    resolved = resolve_despike_settings(process_settings)
+
+    assert resolved == {}
+
+
 def test_load_settings_rejects_invalid_despike_channel_override(
     tmp_path,
 ) -> None:
-    """A bad despike_channels override inside an instrument override raises."""
+    """A bad per-channel despiking override in an instrument override raises."""
     config_path = tmp_path / "config.toml"
     rsk_dir = tmp_path / "rsk"
     profiles_dir = tmp_path / "profiles"
@@ -1026,13 +1174,151 @@ def test_load_settings_rejects_invalid_despike_channel_override(
         "[process.geolocation]\n"
         "reference_latitude = 0.0\n"
         "reference_longitude = 0.0\n"
-        "[instruments.208532.process.despike_channels.practical_salinity]\n"
+        "[instruments.208532.process.channels.practical_salinity]\n"
+        "despike = true\n"
+        "[instruments.208532.process.channels.practical_salinity.despiking]\n"
         "window_length = 4\n",
         encoding="utf-8",
     )
 
     with pytest.raises(ValidationError):
         load_settings(config_path)
+
+
+def test_channel_settings_despike_bool_defaults_false() -> None:
+    """ChannelSettings.despike defaults to False (not despiked)."""
+    assert ChannelSettings().despike is False
+
+
+def test_channel_settings_despiking_defaults_empty() -> None:
+    """ChannelSettings.despiking defaults to an all-None override."""
+    assert ChannelSettings().despiking == DespikeChannelOverride()
+
+
+def test_channel_settings_output_dtype_defaults_none() -> None:
+    """output_dtype defaults to None, meaning use the project default."""
+    assert ChannelSettings().output_dtype is None
+
+
+def test_channel_settings_rejects_invalid_output_dtype() -> None:
+    """A non-numpy-dtype output_dtype string fails validation."""
+    with pytest.raises(ValidationError):
+        ChannelSettings(output_dtype="not_a_dtype")
+
+
+def test_channel_settings_rejects_non_floating_output_dtype() -> None:
+    """An integer output_dtype fails validation."""
+    with pytest.raises(ValidationError):
+        ChannelSettings(output_dtype="int32")
+
+
+def test_process_settings_output_dtype_defaults_to_float32() -> None:
+    """ProcessSettings.output_dtype defaults to 'float32'."""
+    assert ProcessSettings(geolocation=_GEOLOCATION).output_dtype == "float32"
+
+
+def test_process_settings_rejects_non_floating_output_dtype() -> None:
+    """A non-floating project-wide output_dtype fails validation."""
+    with pytest.raises(ValidationError):
+        ProcessSettings(geolocation=_GEOLOCATION, output_dtype="int64")
+
+
+def test_netcdf_compression_settings_defaults() -> None:
+    """Defaults match this package's previous hardcoded netCDF behavior."""
+    settings = NetcdfCompressionSettings()
+    assert settings.enabled is True
+    assert settings.complevel == 4
+    assert settings.shuffle is True
+
+
+def test_netcdf_compression_settings_rejects_out_of_range_complevel() -> None:
+    """Complevel must be within HDF5's 0-9 deflate range."""
+    with pytest.raises(ValidationError):
+        NetcdfCompressionSettings(complevel=-1)
+    with pytest.raises(ValidationError):
+        NetcdfCompressionSettings(complevel=10)
+
+
+def test_parquet_compression_settings_defaults() -> None:
+    """Defaults match this package's previous hardcoded parquet behavior."""
+    settings = ParquetCompressionSettings()
+    assert settings.enabled is True
+    assert settings.level is None
+
+
+def test_parquet_compression_settings_rejects_out_of_range_level() -> None:
+    """Level must be within zstd's documented 1-22 range."""
+    with pytest.raises(ValidationError):
+        ParquetCompressionSettings(level=0)
+    with pytest.raises(ValidationError):
+        ParquetCompressionSettings(level=23)
+
+
+def test_zarr_compression_settings_defaults() -> None:
+    """Defaults are the new, deliberate replacement for zarr's own default."""
+    settings = ZarrCompressionSettings()
+    assert settings.enabled is True
+    assert settings.cname == "zstd"
+    assert settings.clevel == 5
+    assert settings.shuffle is None
+
+
+def test_zarr_compression_settings_rejects_out_of_range_clevel() -> None:
+    """Clevel must be within Blosc's 0-9 range."""
+    with pytest.raises(ValidationError):
+        ZarrCompressionSettings(clevel=-1)
+    with pytest.raises(ValidationError):
+        ZarrCompressionSettings(clevel=10)
+
+
+def test_process_settings_compression_fields_default_to_enabled() -> None:
+    """ProcessSettings' compression fields default to enabled settings."""
+    settings = ProcessSettings(geolocation=_GEOLOCATION)
+    assert settings.netcdf_compression == NetcdfCompressionSettings()
+    assert settings.parquet_compression == ParquetCompressionSettings()
+
+
+def test_bin_settings_compression_fields_default_to_enabled() -> None:
+    """BinSettings' compression fields default to enabled settings."""
+    settings = BinSettings()
+    assert settings.netcdf_compression == NetcdfCompressionSettings()
+    assert settings.zarr_compression == ZarrCompressionSettings()
+
+
+def test_process_and_bin_netcdf_compression_are_independent_instances() -> None:
+    """Overriding one's netcdf_compression does not affect the other's."""
+    process_settings = ProcessSettings(
+        geolocation=_GEOLOCATION,
+        netcdf_compression=NetcdfCompressionSettings(complevel=9),
+    )
+    bin_settings = BinSettings()
+
+    assert process_settings.netcdf_compression.complevel == 9
+    assert bin_settings.netcdf_compression.complevel == 4
+
+
+def test_resolve_output_dtype_falls_back_to_project_default() -> None:
+    """A channel with no output_dtype override uses the project default."""
+    process_settings = ProcessSettings(geolocation=_GEOLOCATION)
+
+    assert resolve_output_dtype(process_settings, "temperature") == "float32"
+
+
+def test_resolve_output_dtype_uses_channel_override() -> None:
+    """A channel's own output_dtype overrides the project default."""
+    process_settings = ProcessSettings(
+        geolocation=_GEOLOCATION,
+        output_dtype="float32",
+        channels={
+            "practical_salinity": ChannelSettings(output_dtype="float64")
+        },
+    )
+
+    assert (
+        resolve_output_dtype(process_settings, "practical_salinity")
+        == "float64"
+    )
+    assert resolve_output_dtype(process_settings, "temperature") == "float32"
 
 
 def test_instruments_and_deployments_default_to_empty(tmp_path) -> None:

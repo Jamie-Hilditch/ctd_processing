@@ -10,6 +10,9 @@ import logging
 import sys
 from pathlib import Path
 
+from ctd_processing.cli._options import LogLevel
+from ctd_processing.logging_utils import VERBOSE
+
 PACKAGE_LOGGER_NAME = "ctd_processing"
 
 _STDOUT_HANDLER_NAME = "ctd_processing.stdout"
@@ -20,7 +23,11 @@ _FORMATTER = logging.Formatter(
     "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 
-__all__ = ["configure_stdout_logging", "configure_file_logging"]
+__all__ = [
+    "configure_stdout_logging",
+    "configure_file_logging",
+    "configure_cli_logging",
+]
 
 
 class _MaxLevelFilter(logging.Filter):
@@ -168,3 +175,40 @@ def configure_file_logging(
         handler.setLevel(logging.ERROR)
         handler.setFormatter(_FORMATTER)
         logger.addHandler(handler)
+
+
+def configure_cli_logging(
+    log_level: LogLevel, verbose: bool, debug: bool, no_stdout_log: bool
+) -> None:
+    """Configure stdout logging from a command's logging options.
+
+    Resolves the effective level from `log_level`/`verbose`/`debug` (see
+    the ``--log-level``/``--verbose``/``--debug`` options in
+    `ctd_processing.cli._options`) and applies it via
+    :func:`configure_stdout_logging`. Every ctd_processing command calls
+    this first, so their logging options behave identically.
+
+    Parameters
+    ----------
+    log_level : LogLevel
+        Minimum log level to emit. Overridden by `verbose`/`debug` when
+        either is given.
+    verbose : bool
+        If given, emit VERBOSE-level (and above) log records regardless
+        of `log_level`. Overridden by `debug`.
+    debug : bool
+        If given, emit DEBUG-level (and above) log records regardless of
+        `log_level`/`verbose` -- DEBUG is more detailed than VERBOSE, so
+        this includes every VERBOSE record too.
+    no_stdout_log : bool
+        If given, log records are not written to stdout. Independent of
+        any ``paths.log_file``/``paths.error_log_file`` configured for
+        the command.
+    """
+    if debug:
+        level = logging.DEBUG
+    elif verbose:
+        level = VERBOSE
+    else:
+        level = logging.getLevelNamesMapping()[log_level.value]
+    configure_stdout_logging(level=level, enable_stdout=not no_stdout_log)

@@ -33,7 +33,7 @@ def test_unrecognized_channel_falls_back_to_input() -> None:
 
 def test_channel_key_slugifies_long_name_not_standard_name() -> None:
     """The key comes from long_name, which may differ from standard_name."""
-    assert channel_key_for_longname("temperature") == "sea_water_temperature"
+    assert channel_key_for_longname("temperature") == "temperature"
     assert channel_key_for_longname("pressure") == "absolute_pressure"
     assert channel_key_for_longname("sea_pressure") == "sea_pressure"
     assert channel_key_for_longname("salinity") == "practical_salinity"
@@ -41,6 +41,29 @@ def test_channel_key_slugifies_long_name_not_standard_name() -> None:
         channel_key_for_longname("dissolved_o2_concentration")
         == "dissolved_oxygen_concentration"
     )
+
+
+def test_channel_key_drops_redundant_sea_water_qualifier() -> None:
+    """A "sea water" qualifier is dropped from the key; standard_name is not."""
+    assert channel_key_for_longname("conductivity") == "electrical_conductivity"
+    assert (
+        cf_metadata_for_longname("conductivity").standard_name
+        == "sea_water_electrical_conductivity"
+    )
+
+
+def test_channel_key_drops_leading_in_before_sea_water() -> None:
+    """A "... in sea water" qualifier drops both "in" and "sea_water"."""
+    assert channel_key_for_longname("speed_of_sound") == "speed_of_sound"
+    assert (
+        cf_metadata_for_longname("speed_of_sound").standard_name
+        == "speed_of_sound_in_sea_water"
+    )
+
+
+def test_channel_key_bare_sea_water_is_not_emptied() -> None:
+    """Dropping "sea_water" never leaves an empty key."""
+    assert channel_key_for_longname("sea_water") == "sea_water"
 
 
 def test_channel_key_for_unrecognized_channel_is_usually_a_no_op() -> None:

@@ -163,13 +163,15 @@ def test_despike_channel_logs_at_verbose_level(
     assert record.getMessage() == "despiked 1 point(s)"
 
 
-def test_despike_channel_no_spikes_does_not_log(
+def test_despike_channel_no_spikes_still_logs_zero_count(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """No VERBOSE record is emitted when nothing was despiked."""
+    """A 0-count VERBOSE record is still emitted when nothing was despiked."""
     channel = Channel(data=np.array([1.0, 1.0, 1.0, 1.0, 1.0]))
     caplog.set_level(VERBOSE, logger="ctd_processing.process.despike")
 
     despike_channel(channel, DespikeSettings())
 
-    assert caplog.records == []
+    [record] = caplog.records
+    assert record.levelno == VERBOSE
+    assert record.getMessage() == "despiked 0 point(s)"

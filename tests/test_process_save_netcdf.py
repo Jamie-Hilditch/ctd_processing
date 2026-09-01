@@ -6,9 +6,25 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from ctd_processing.config import (
+    ChannelSettings,
+    GeolocationSettings,
+    NetcdfCompressionSettings,
+    ProcessSettings,
+)
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
-from ctd_processing.process.save_netcdf import read_netcdf, write_netcdf
+from ctd_processing.process.save_netcdf import (
+    netcdf_compression_encoding,
+    read_netcdf,
+    write_netcdf,
+)
+
+_PROCESS_SETTINGS = ProcessSettings(
+    geolocation=GeolocationSettings(
+        reference_latitude=0.0, reference_longitude=0.0
+    )
+)
 
 
 def _dataset() -> Dataset:
@@ -58,7 +74,7 @@ def _dataset() -> Dataset:
 def test_write_netcdf_round_trips_float_data_with_nan(tmp_path: Path) -> None:
     """Float channel data, including NaN, round-trips exactly."""
     dataset = _dataset()
-    path = write_netcdf(dataset, tmp_path / "profile.nc")
+    path = write_netcdf(dataset, tmp_path / "profile.nc", _PROCESS_SETTINGS)
 
     with xr.open_dataset(path, engine="h5netcdf") as ds:
         np.testing.assert_array_equal(
@@ -71,7 +87,7 @@ def test_write_netcdf_round_trips_float_data_with_nan(tmp_path: Path) -> None:
 def test_write_netcdf_round_trips_time_exactly(tmp_path: Path) -> None:
     """The time coordinate round-trips to the exact same datetime64 values."""
     dataset = _dataset()
-    path = write_netcdf(dataset, tmp_path / "profile.nc")
+    path = write_netcdf(dataset, tmp_path / "profile.nc", _PROCESS_SETTINGS)
 
     with xr.open_dataset(path, engine="h5netcdf") as ds:
         assert np.array_equal(
@@ -86,7 +102,7 @@ def test_write_netcdf_variable_attrs_match_channel_metadata(
 ) -> None:
     """Each variable's CF attrs match its source Channel.metadata."""
     dataset = _dataset()
-    path = write_netcdf(dataset, tmp_path / "profile.nc")
+    path = write_netcdf(dataset, tmp_path / "profile.nc", _PROCESS_SETTINGS)
 
     with xr.open_dataset(path, engine="h5netcdf") as ds:
         temp_attrs = ds["sea_water_temperature"].attrs
@@ -104,7 +120,7 @@ def test_write_netcdf_attaches_channel_history_to_its_own_variable(
 ) -> None:
     """A channel's history becomes an attribute on that channel's variable."""
     dataset = _dataset()
-    path = write_netcdf(dataset, tmp_path / "profile.nc")
+    path = write_netcdf(dataset, tmp_path / "profile.nc", _PROCESS_SETTINGS)
 
     with xr.open_dataset(path, engine="h5netcdf") as ds:
         assert (
@@ -119,7 +135,7 @@ def test_write_netcdf_global_history_is_dataset_level_only(
 ) -> None:
     """The global history attr holds dataset.history, not channel history."""
     dataset = _dataset()
-    path = write_netcdf(dataset, tmp_path / "profile.nc")
+    path = write_netcdf(dataset, tmp_path / "profile.nc", _PROCESS_SETTINGS)
 
     with xr.open_dataset(path, engine="h5netcdf") as ds:
         assert ds.attrs["history"] == "; ".join(dataset.history)
@@ -131,7 +147,7 @@ def test_write_netcdf_global_attrs_drop_none_and_format_datetimes(
 ) -> None:
     """None-valued metadata is dropped; datetime values become ISO strings."""
     dataset = _dataset()
-    path = write_netcdf(dataset, tmp_path / "profile.nc")
+    path = write_netcdf(dataset, tmp_path / "profile.nc", _PROCESS_SETTINGS)
 
     with xr.open_dataset(path, engine="h5netcdf") as ds:
         assert "deployment_comment" not in ds.attrs
@@ -139,10 +155,40 @@ def test_write_netcdf_global_attrs_drop_none_and_format_datetimes(
         assert ds.attrs["instrument_serial_number"] == 208532
 
 
+def test_write_netcdf_casts_float_channels_to_default_dtype(
+    tmp_path: Path,
+) -> None:
+    """Float channels are written in the project-wide default dtype."""
+    dataset = _dataset()
+    path = write_netcdf(dataset, tmp_path / "profile.nc", _PROCESS_SETTINGS)
+
+    with xr.open_dataset(path, engine="h5netcdf") as ds:
+        assert ds["sea_water_temperature"].dtype == np.float32
+        assert ds["sea_pressure"].dtype == np.float32
+
+
+def test_write_netcdf_honors_per_channel_output_dtype_override(
+    tmp_path: Path,
+) -> None:
+    """A channel's own output_dtype overrides the project-wide default."""
+    settings = ProcessSettings(
+        geolocation=GeolocationSettings(
+            reference_latitude=0.0, reference_longitude=0.0
+        ),
+        channels={"sea_pressure": ChannelSettings(output_dtype="float64")},
+    )
+    dataset = _dataset()
+    path = write_netcdf(dataset, tmp_path / "profile.nc", settings)
+
+    with xr.open_dataset(path, engine="h5netcdf") as ds:
+        assert ds["sea_water_temperature"].dtype == np.float32
+        assert ds["sea_pressure"].dtype == np.float64
+
+
 def test_write_netcdf_compresses_float_variables(tmp_path: Path) -> None:
     """Float data variables are written with zlib compression applied."""
     dataset = _dataset()
-    path = write_netcdf(dataset, tmp_path / "profile.nc")
+    path = write_netcdf(dataset, tmp_path / "profile.nc", _PROCESS_SETTINGS)
 
     import h5netcdf
 
@@ -150,10 +196,83 @@ def test_write_netcdf_compresses_float_variables(tmp_path: Path) -> None:
         assert f["sea_water_temperature"]._h5ds.compression == "gzip"
 
 
+def test_write_netcdf_honors_custom_complevel_and_shuffle(
+    tmp_path: Path,
+) -> None:
+    """A custom complevel/shuffle in netcdf_compression takes effect."""
+    settings = ProcessSettings(
+        geolocation=GeolocationSettings(
+            reference_latitude=0.0, reference_longitude=0.0
+        ),
+        netcdf_compression=NetcdfCompressionSettings(
+            complevel=9, shuffle=False
+        ),
+    )
+    dataset = _dataset()
+    path = write_netcdf(dataset, tmp_path / "profile.nc", settings)
+
+    import h5netcdf
+
+    with h5netcdf.File(path, "r") as f:
+        h5ds = f["sea_water_temperature"]._h5ds
+        assert h5ds.compression_opts == 9
+        assert h5ds.shuffle is False
+
+
+def test_write_netcdf_disabling_compression_leaves_variables_uncompressed(
+    tmp_path: Path,
+) -> None:
+    """enabled=False writes fully uncompressed netCDF files."""
+    settings = ProcessSettings(
+        geolocation=GeolocationSettings(
+            reference_latitude=0.0, reference_longitude=0.0
+        ),
+        netcdf_compression=NetcdfCompressionSettings(enabled=False),
+    )
+    dataset = _dataset()
+    path = write_netcdf(dataset, tmp_path / "profile.nc", settings)
+
+    import h5netcdf
+
+    with h5netcdf.File(path, "r") as f:
+        assert f["sea_water_temperature"]._h5ds.compression is None
+
+
+def test_netcdf_compression_encoding_returns_none_for_non_float_dtype() -> None:
+    """Integer/datetime dtypes are never compressed regardless of settings."""
+    assert (
+        netcdf_compression_encoding(
+            np.dtype("int64"), NetcdfCompressionSettings()
+        )
+        is None
+    )
+
+
+def test_netcdf_compression_encoding_returns_none_when_disabled() -> None:
+    """enabled=False returns None even for a floating-point dtype."""
+    assert (
+        netcdf_compression_encoding(
+            np.dtype("float32"), NetcdfCompressionSettings(enabled=False)
+        )
+        is None
+    )
+
+
+def test_netcdf_compression_encoding_returns_expected_encoding() -> None:
+    """A float dtype with enabled=True returns the h5netcdf encoding."""
+    encoding = netcdf_compression_encoding(
+        np.dtype("float32"),
+        NetcdfCompressionSettings(complevel=7, shuffle=False),
+    )
+    assert encoding == {"zlib": True, "complevel": 7, "shuffle": False}
+
+
 def test_write_netcdf_creates_missing_parent_directory(tmp_path: Path) -> None:
     """write_netcdf creates path.parent if it doesn't already exist."""
     dataset = _dataset()
-    path = write_netcdf(dataset, tmp_path / "nested" / "profile.nc")
+    path = write_netcdf(
+        dataset, tmp_path / "nested" / "profile.nc", _PROCESS_SETTINGS
+    )
 
     assert path.exists()
 
@@ -163,7 +282,7 @@ def test_read_netcdf_round_trips_channel_data_and_metadata(
 ) -> None:
     """A channel's data, metadata, and history round-trip via read_netcdf."""
     dataset = _dataset()
-    path = write_netcdf(dataset, tmp_path / "profile.nc")
+    path = write_netcdf(dataset, tmp_path / "profile.nc", _PROCESS_SETTINGS)
 
     loaded = read_netcdf(path)
 
@@ -191,7 +310,7 @@ def test_read_netcdf_round_trips_time_and_adds_cf_defaults(
 ) -> None:
     """Time round-trips exactly, carrying the CF defaults write_netcdf adds."""
     dataset = _dataset()
-    path = write_netcdf(dataset, tmp_path / "profile.nc")
+    path = write_netcdf(dataset, tmp_path / "profile.nc", _PROCESS_SETTINGS)
 
     loaded = read_netcdf(path)
 
@@ -208,7 +327,7 @@ def test_read_netcdf_round_trips_dataset_metadata_and_history(
 ) -> None:
     """Global attrs and history decode back to dataset.metadata/history."""
     dataset = _dataset()
-    path = write_netcdf(dataset, tmp_path / "profile.nc")
+    path = write_netcdf(dataset, tmp_path / "profile.nc", _PROCESS_SETTINGS)
 
     loaded = read_netcdf(path)
 
@@ -222,7 +341,7 @@ def test_read_netcdf_round_trips_dataset_metadata_and_history(
 def test_read_netcdf_does_not_inject_extra_history(tmp_path: Path) -> None:
     """Loading channels bypasses add_channel, so history isn't padded out."""
     dataset = _dataset()
-    path = write_netcdf(dataset, tmp_path / "profile.nc")
+    path = write_netcdf(dataset, tmp_path / "profile.nc", _PROCESS_SETTINGS)
 
     loaded = read_netcdf(path)
 

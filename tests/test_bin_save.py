@@ -2,33 +2,30 @@
 
 from pathlib import Path
 
+import h5netcdf
 import numpy as np
 import xarray as xr
+import zarr
+from zarr.codecs import BloscCodec, BytesCodec
+from zarr.core.array import Array
+from zarr.core.metadata import ArrayV3Metadata
 
-from ctd_processing.bin.save import binned_filename, save_binned_dataset
-from ctd_processing.process.channel import Channel
-from ctd_processing.process.dataset import Dataset
+from ctd_processing.bin.save import load_binned_dataset, save_binned_dataset
+from ctd_processing.config import (
+    BinSettings,
+    NetcdfCompressionSettings,
+    ZarrCompressionSettings,
+)
 
 
-def test_binned_filename_format() -> None:
-    """Filename combines serial number and deployment stem, with suffix."""
-    time = Channel(data=np.array(["2026-01-01"], dtype="datetime64[s]"))
-    dataset = Dataset(
-        time=time,
-        metadata={
-            "instrument_serial_number": 208532,
-            "source_file": "/data/rsk/243188_20260809_0304.rsk",
-        },
-    )
-
-    assert (
-        binned_filename(dataset, "nc")
-        == "208532_243188_20260809_0304_binned.nc"
-    )
-    assert (
-        binned_filename(dataset, "zarr")
-        == "208532_243188_20260809_0304_binned.zarr"
-    )
+def _codecs(path: Path, variable: str) -> tuple[object, ...]:
+    """Read the written zarr codecs for one array."""
+    group = zarr.open_group(path, mode="r")
+    array = group[variable]
+    assert isinstance(array, Array)
+    metadata = array.metadata
+    assert isinstance(metadata, ArrayV3Metadata)
+    return metadata.codecs
 
 
 def _combined_dataset() -> xr.Dataset:
@@ -52,7 +49,7 @@ def test_save_binned_dataset_netcdf_round_trips(tmp_path: Path) -> None:
     """output_format='netcdf' writes a file xarray can read back."""
     dataset = _combined_dataset()
 
-    path = save_binned_dataset(dataset, tmp_path, "out.nc", "netcdf")
+    path = save_binned_dataset(dataset, tmp_path, "out.nc", BinSettings())
 
     assert path == tmp_path / "out.nc"
     with xr.open_dataset(path) as reopened:
@@ -67,7 +64,9 @@ def test_save_binned_dataset_zarr_round_trips(tmp_path: Path) -> None:
     """output_format='zarr' writes a store xarray can read back."""
     dataset = _combined_dataset()
 
-    path = save_binned_dataset(dataset, tmp_path, "out.zarr", "zarr")
+    path = save_binned_dataset(
+        dataset, tmp_path, "out.zarr", BinSettings(output_format="zarr")
+    )
 
     assert path == tmp_path / "out.zarr"
     with xr.open_zarr(path) as reopened:
@@ -82,7 +81,147 @@ def test_save_binned_dataset_creates_missing_directory(tmp_path: Path) -> None:
     dataset = _combined_dataset()
     directory = tmp_path / "nested" / "binned"
 
-    save_binned_dataset(dataset, directory, "out.nc", "netcdf")
+    save_binned_dataset(dataset, directory, "out.nc", BinSettings())
 
     assert directory.is_dir()
     assert (directory / "out.nc").is_file()
+
+
+def test_save_binned_dataset_netcdf_compresses_float_variables(
+    tmp_path: Path,
+) -> None:
+    """The default settings zlib-compress float variables, not coordinates."""
+    dataset = _combined_dataset()
+
+    path = save_binned_dataset(dataset, tmp_path, "out.nc", BinSettings())
+
+    with h5netcdf.File(path, "r") as f:
+        assert f["sea_water_temperature"]._h5ds.compression == "gzip"
+        assert f["z"]._h5ds.compression is None
+
+
+def test_save_binned_dataset_netcdf_honors_custom_complevel_and_shuffle(
+    tmp_path: Path,
+) -> None:
+    """A custom complevel/shuffle in netcdf_compression takes effect."""
+    dataset = _combined_dataset()
+    settings = BinSettings(
+        netcdf_compression=NetcdfCompressionSettings(complevel=9, shuffle=False)
+    )
+
+    path = save_binned_dataset(dataset, tmp_path, "out.nc", settings)
+
+    with h5netcdf.File(path, "r") as f:
+        h5ds = f["sea_water_temperature"]._h5ds
+        assert h5ds.compression_opts == 9
+        assert h5ds.shuffle is False
+
+
+def test_save_binned_dataset_netcdf_disabling_compression_leaves_uncompressed(
+    tmp_path: Path,
+) -> None:
+    """enabled=False writes fully uncompressed netCDF variables."""
+    dataset = _combined_dataset()
+    settings = BinSettings(
+        netcdf_compression=NetcdfCompressionSettings(enabled=False)
+    )
+
+    path = save_binned_dataset(dataset, tmp_path, "out.nc", settings)
+
+    with h5netcdf.File(path, "r") as f:
+        assert f["sea_water_temperature"]._h5ds.compression is None
+
+
+def test_save_binned_dataset_zarr_uses_explicit_default_compressor(
+    tmp_path: Path,
+) -> None:
+    """The default settings attach an explicit Blosc/zstd codec, not zarr's."""
+    dataset = _combined_dataset()
+
+    path = save_binned_dataset(
+        dataset, tmp_path, "out.zarr", BinSettings(output_format="zarr")
+    )
+
+    codecs = _codecs(path, "sea_water_temperature")
+    blosc_codecs = [codec for codec in codecs if isinstance(codec, BloscCodec)]
+    assert len(blosc_codecs) == 1
+    assert blosc_codecs[0].cname == "zstd"
+
+
+def test_save_binned_dataset_zarr_honors_custom_cname_and_clevel(
+    tmp_path: Path,
+) -> None:
+    """A custom cname/clevel in BinSettings.zarr_compression takes effect."""
+    dataset = _combined_dataset()
+    settings = BinSettings(
+        output_format="zarr",
+        zarr_compression=ZarrCompressionSettings(cname="lz4", clevel=1),
+    )
+
+    path = save_binned_dataset(dataset, tmp_path, "out.zarr", settings)
+
+    codecs = _codecs(path, "sea_water_temperature")
+    blosc_codecs = [codec for codec in codecs if isinstance(codec, BloscCodec)]
+    assert len(blosc_codecs) == 1
+    assert blosc_codecs[0].cname == "lz4"
+    assert blosc_codecs[0].clevel == 1
+
+
+def test_save_binned_dataset_zarr_disabling_compression_uses_bytes_codec_only(
+    tmp_path: Path,
+) -> None:
+    """enabled=False writes with no Blosc codec at all."""
+    dataset = _combined_dataset()
+    settings = BinSettings(
+        output_format="zarr",
+        zarr_compression=ZarrCompressionSettings(enabled=False),
+    )
+
+    path = save_binned_dataset(dataset, tmp_path, "out.zarr", settings)
+
+    codecs = _codecs(path, "sea_water_temperature")
+    assert not any(isinstance(codec, BloscCodec) for codec in codecs)
+    assert any(isinstance(codec, BytesCodec) for codec in codecs)
+
+
+def test_load_binned_dataset_netcdf_round_trips(tmp_path: Path) -> None:
+    """A netcdf-written dataset loads back with matching data and attrs."""
+    dataset = _combined_dataset()
+    path = save_binned_dataset(dataset, tmp_path, "out.nc", BinSettings())
+
+    loaded = load_binned_dataset(path, "netcdf")
+
+    np.testing.assert_array_equal(
+        loaded["sea_water_temperature"].values,
+        dataset["sea_water_temperature"].values,
+    )
+    assert loaded.attrs["instrument_serial_number"] == 208532
+
+
+def test_load_binned_dataset_zarr_round_trips(tmp_path: Path) -> None:
+    """A zarr-written dataset loads back with matching data."""
+    dataset = _combined_dataset()
+    path = save_binned_dataset(
+        dataset, tmp_path, "out.zarr", BinSettings(output_format="zarr")
+    )
+
+    loaded = load_binned_dataset(path, "zarr")
+
+    np.testing.assert_array_equal(
+        loaded["sea_water_temperature"].values,
+        dataset["sea_water_temperature"].values,
+    )
+
+
+def test_load_binned_dataset_does_not_leave_file_open(tmp_path: Path) -> None:
+    """The loaded dataset is safe to use after its source file is deleted."""
+    dataset = _combined_dataset()
+    path = save_binned_dataset(dataset, tmp_path, "out.nc", BinSettings())
+
+    loaded = load_binned_dataset(path, "netcdf")
+    path.unlink()
+
+    np.testing.assert_array_equal(
+        loaded["sea_water_temperature"].values,
+        dataset["sea_water_temperature"].values,
+    )

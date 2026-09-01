@@ -32,7 +32,7 @@ from ctd_processing.process.ct_lag import process_ct_lag
 from ctd_processing.process.dataset import Dataset
 from ctd_processing.process.derived_variables import compute_derived_variables
 from ctd_processing.process.geolocation import attach_geolocation
-from ctd_processing.process.profiles import find_profiles
+from ctd_processing.process.profiles import find_profiles, resolve_cast_slices
 from ctd_processing.process.raw_channels import process_raw_channels
 from ctd_processing.process.read import read_rsk
 from ctd_processing.process.save import save_profile
@@ -91,29 +91,43 @@ def process_deployment(
 ) -> None:
     """Process one ``.rsk`` deployment into extracted profile files.
 
-    Reads the deployment and builds a `Dataset` from it, then resolves
-    the effective `ProcessSettings` for it -- an instrument's serial
-    number is only known once its data has actually been read (never
-    inferred from a filename), so settings resolution happens here,
-    after `build_dataset`, rather than before the file is read (see
-    :func:`ctd_processing.config.resolve_process_settings`). It also
-    resolves `process_settings.despike`/`despike_channels` into a flat,
-    per-channel mapping once (see
-    :func:`ctd_processing.config.resolve_despike_settings`), reused for
-    the rest of the deployment. It then applies configured raw-channel
-    processing (`raw_channels`) and despiking to every channel, ensures a
-    `sea_pressure` channel exists (trusting one
+    Reads the deployment, then resolves the effective `ProcessSettings`
+    for it -- an instrument's serial number is read directly off
+    `rsk.instrument.serialID` (never inferred from a filename), so
+    settings resolution can happen here, before `build_dataset`, rather
+    than after (see :func:`ctd_processing.config.resolve_process_settings`).
+    This ordering is what lets `process_settings.read_channels` restrict
+    which channels `build_dataset` extracts in the first place, rather
+    than pruning them afterward. It also resolves
+    `process_settings.despiking`/`process_settings.channels` into a flat,
+    per-channel mapping once
+    (see :func:`ctd_processing.config.resolve_despike_settings`), reused
+    for the rest of the deployment. It then builds the `Dataset` (see
+    `ctd_processing.process.build.build_dataset`), applies configured
+    raw-channel processing (`raw_channels`) and despiking to every
+    channel, ensures a `sea_pressure` channel exists (trusting one
     already in the dataset by default, or recomputing it from
     `absolute_pressure` if `atmospheric_pressure` is set), identifies
-    profiles from it using `profiles`, and, if configured (`ct_lag`),
-    calculates and applies a deployment-wide conductivity/temperature lag
-    correction. Finally, this loops over every identified profile itself:
-    each is extracted from the full-deployment `Dataset` (`Dataset.subset`),
+    turnaround cycles from it using `profiles` (both the downcast and
+    upcast of every cycle, regardless of `profiles.direction` -- see
+    :func:`ctd_processing.process.profiles.find_profiles`), and resolves
+    each cycle into the cast(s) `profiles.direction` selects (see
+    :func:`ctd_processing.process.profiles.resolve_cast_slices` -- never
+    including the dwell between a cycle's downcast and upcast). If
+    configured (`ct_lag`), a deployment-wide conductivity/temperature lag
+    correction is then calculated and applied using only those resolved
+    spans -- the same data that ends up in the output, not the full,
+    unresolved cycles. Finally, this loops over every resolved cast: each
+    is extracted from the full-deployment `Dataset` (`Dataset.subset`),
     passed through :func:`process_profile` (attaching a position,
     computing TEOS-10 derived variables, and despiking configured ones),
-    and written into `profiles_directory` in
-    `process_settings.profile_format` (see
-    :func:`ctd_processing.process.save.save_profile`). If
+    and written into a per-deployment subdirectory of `profiles_directory`
+    in `process_settings.profile_format` (see
+    :func:`ctd_processing.process.save.save_profile`). With
+    `profiles.direction` set to ``"both"``, one identified cycle yields
+    two separate profiles (downcast and upcast), so the number of
+    profiles written can exceed the number of cycles logged as
+    "Identified". If
     `process_settings.geolocation.external_dataset_path` is set, that
     dataset is opened once for the whole loop and reused across every
     profile, rather than once per profile.
@@ -139,36 +153,43 @@ def process_deployment(
     """
     logger.info("Reading deployment: %s", file)
     rsk = read_rsk(file)
-    dataset = build_dataset(rsk, file, settings.project)
     process_settings = resolve_process_settings(
         settings,
-        serial_number=str(dataset.metadata["instrument_serial_number"]),
+        serial_number=str(rsk.instrument.serialID),  # ty: ignore
         stem=file.stem,
     )
     despike = resolve_despike_settings(process_settings)
+    dataset = build_dataset(
+        rsk, file, settings.project, process_settings.read_channels
+    )
     dataset = process_raw_channels(dataset, process_settings, despike)
     dataset = compute_sea_pressure(
         dataset, process_settings.atmospheric_pressure
     )
     profiles = find_profiles(dataset, process_settings.profiles)
     logger.info("Identified %d profile(s) in %s", len(profiles), file)
-    dataset = process_ct_lag(dataset, profiles, process_settings.ct_lag)
 
-    total = len(profiles)
+    cast_slices = [
+        cast_slice
+        for profile in profiles
+        for cast_slice in resolve_cast_slices(
+            profile, process_settings.profiles.direction
+        )
+    ]
+    dataset = process_ct_lag(dataset, cast_slices, process_settings.ct_lag)
+    total = len(cast_slices)
     geolocation = process_settings.geolocation
     external_dataset = None
     if geolocation.external_dataset_path is not None:
         external_dataset = xr.open_dataset(geolocation.external_dataset_path)
     profile_paths = []
     try:
-        for index, profile in enumerate(profiles):
+        for index, cast_slice in enumerate(cast_slices):
             description = (
                 f"extracted profile {index + 1} of {total} "
-                f"(samples {profile.down_start}:{profile.up_end})"
+                f"(samples {cast_slice.start}:{cast_slice.stop})"
             )
-            profile_dataset = dataset.subset(
-                slice(profile.down_start, profile.up_end), description
-            )
+            profile_dataset = dataset.subset(cast_slice, description)
             log_verbose(logger, description)
             profile_dataset = process_profile(
                 profile_dataset,
@@ -181,9 +202,8 @@ def process_deployment(
                 dataset,
                 profile_dataset,
                 index,
-                total,
                 profiles_directory,
-                process_settings.profile_format,
+                process_settings,
             )
             profile_paths.append(path)
     finally:

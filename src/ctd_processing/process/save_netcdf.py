@@ -12,13 +12,53 @@ import numpy as np
 import xarray as xr
 
 from ctd_processing.cf_attrs import channel_attrs, dataset_attrs, pop_history
+from ctd_processing.config import (
+    NetcdfCompressionSettings,
+    ProcessSettings,
+    resolve_output_dtype,
+)
 from ctd_processing.logging_utils import log_verbose
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["read_netcdf", "write_netcdf"]
+__all__ = ["netcdf_compression_encoding", "read_netcdf", "write_netcdf"]
+
+
+def netcdf_compression_encoding(
+    dtype: np.dtype, settings: NetcdfCompressionSettings
+) -> dict[str, object] | None:
+    """Build one variable's h5netcdf compression encoding.
+
+    Shared by `write_netcdf` and
+    `ctd_processing.bin.save.save_binned_dataset` -- the two writers that
+    apply `ctd_processing.config.NetcdfCompressionSettings` -- so both
+    compress the same way from one source of truth.
+
+    Parameters
+    ----------
+    dtype : numpy.dtype
+        The variable's dtype. Only floating-point variables are ever
+        compressed.
+    settings : ctd_processing.config.NetcdfCompressionSettings
+        `enabled`/`complevel`/`shuffle` to encode.
+
+    Returns
+    -------
+    dict[str, object] or None
+        The `xarray.Dataset.to_netcdf` encoding for this one variable, or
+        ``None`` if `dtype` isn't floating-point or `settings.enabled` is
+        ``False`` -- meaning this variable should get no `encoding` entry
+        at all (left uncompressed).
+    """
+    if not settings.enabled or not np.issubdtype(dtype, np.floating):
+        return None
+    return {
+        "zlib": True,
+        "complevel": settings.complevel,
+        "shuffle": settings.shuffle,
+    }
 
 
 def read_netcdf(path: Path) -> Dataset:
@@ -78,7 +118,9 @@ def read_netcdf(path: Path) -> Dataset:
     return dataset
 
 
-def write_netcdf(dataset: Dataset, path: Path) -> Path:
+def write_netcdf(
+    dataset: Dataset, path: Path, process_settings: ProcessSettings
+) -> Path:
     """Write `dataset` to `path` as a CF-compliant netCDF file.
 
     Every channel in `dataset.channels` becomes a data variable along a
@@ -90,10 +132,14 @@ def write_netcdf(dataset: Dataset, path: Path) -> Path:
     `dataset.metadata` becomes global attributes (`None` values dropped,
     `datetime`-like values ISO-8601-formatted via
     `ctd_processing.cf_attrs.sanitize_attr`), and
-    `dataset.history` becomes the global ``history`` attribute. Float data
-    variables are compressed with zlib + the shuffle filter via
-    `h5netcdf`; `time` is left uncompressed (a monotonic timestamp array
-    compresses poorly and isn't worth the encoding complexity).
+    `dataset.history` becomes the global ``history`` attribute. Every
+    floating-point channel is cast to its resolved output dtype (see
+    `ctd_processing.config.resolve_output_dtype`) before being written,
+    then compressed per `process_settings.netcdf_compression` (see
+    `ctd_processing.config.NetcdfCompressionSettings` and
+    `netcdf_compression_encoding`); `time` is left at its own dtype and
+    always uncompressed (a monotonic timestamp array compresses poorly
+    and isn't worth the encoding complexity).
 
     Parameters
     ----------
@@ -103,6 +149,9 @@ def write_netcdf(dataset: Dataset, path: Path) -> Path:
     path : pathlib.Path
         File to write to. Its parent directory is created if it does not
         already exist.
+    process_settings : ProcessSettings
+        Supplies `output_dtype`/`channels` for
+        `ctd_processing.config.resolve_output_dtype`.
 
     Returns
     -------
@@ -114,11 +163,18 @@ def write_netcdf(dataset: Dataset, path: Path) -> Path:
     data_vars = {}
     encoding = {}
     for name, channel in dataset.channels.items():
+        data = channel.data
+        if np.issubdtype(data.dtype, np.floating):
+            dtype = resolve_output_dtype(process_settings, name)
+            data = data.astype(dtype, copy=False)
+            variable_encoding = netcdf_compression_encoding(
+                data.dtype, process_settings.netcdf_compression
+            )
+            if variable_encoding is not None:
+                encoding[name] = variable_encoding
         data_vars[name] = xr.DataArray(
-            channel.data, dims=("time",), attrs=channel_attrs(channel)
+            data, dims=("time",), attrs=channel_attrs(channel)
         )
-        if np.issubdtype(channel.data.dtype, np.floating):
-            encoding[name] = {"zlib": True, "complevel": 4, "shuffle": True}
 
     time_attrs = channel_attrs(dataset.time)
     time_attrs.setdefault("standard_name", "time")

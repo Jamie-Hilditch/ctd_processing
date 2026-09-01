@@ -135,7 +135,7 @@ def test_process_deployment_files_processes_two_different_instruments(
         settings,
     )
 
-    written = list(profiles_directory.glob("*.parquet"))
-    serial_numbers = {path.name.split("_")[0] for path in written}
-    assert "243188" in serial_numbers
-    assert "65798" in serial_numbers
+    written = list(profiles_directory.rglob("*.parquet"))
+    deployment_directories = {path.parent.name for path in written}
+    assert example_rsk_path.stem in deployment_directories
+    assert example_rsk_path_oxygen.stem in deployment_directories

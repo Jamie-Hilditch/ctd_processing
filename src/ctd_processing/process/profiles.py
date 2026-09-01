@@ -2,14 +2,18 @@
 
 Configured via `process.profiles` -- see
 `ctd_processing.config.ProfileSettings`. This module only identifies
-profile index boundaries; it does not split `dataset` apart. Some later
-corrections (e.g. conductivity/temperature lag alignment) need to know
-profile boundaries but must run on the full, still-continuous `Dataset`
-first -- actual extraction via `Dataset.subset` is a separate, later step.
+turnaround-cycle index boundaries; it does not split `dataset` apart. Some
+later corrections (e.g. conductivity/temperature lag alignment) need to
+know the full cycle's boundaries and run on the full, still-continuous
+`Dataset` first, before any extraction -- see `find_profiles`.
+`resolve_cast_slices` then decides which cast(s) of a cycle are actually
+worth extracting as separate profiles; actual extraction via
+`Dataset.subset` is a separate, later step still.
 """
 
 import logging
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import profinder
@@ -19,12 +23,17 @@ from ctd_processing.process.dataset import Dataset
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Profile", "find_profiles"]
+__all__ = ["Profile", "find_profiles", "resolve_cast_slices"]
 
 
 @dataclass(frozen=True)
 class Profile:
-    """Index boundaries of one identified profile (cast).
+    """Index boundaries of one identified turnaround cycle (a down/up pair).
+
+    `profinder` always identifies both the downcast and upcast of a
+    cycle, regardless of `ctd_processing.config.ProfileSettings.direction`
+    -- that setting only affects which of them `resolve_cast_slices`
+    later selects for extraction.
 
     Attributes
     ----------
@@ -46,10 +55,13 @@ class Profile:
 
 
 def find_profiles(dataset: Dataset, settings: ProfileSettings) -> list[Profile]:
-    """Identify profiles in `dataset` from its `sea_pressure` channel.
+    """Identify turnaround cycles in `dataset` from its `sea_pressure` channel.
 
     Does not mutate `dataset`; it only computes index boundaries. See the
     module docstring for why extraction is deferred to a later step.
+    `settings.direction` is not consulted here -- every cycle's downcast
+    and upcast are always both identified; `settings.direction` only
+    matters later, to `resolve_cast_slices`.
 
     Parameters
     ----------
@@ -58,12 +70,15 @@ def find_profiles(dataset: Dataset, settings: ProfileSettings) -> list[Profile]:
         channel (see `ctd_processing.process.sea_pressure`).
     settings : ProfileSettings
         Parameters forwarded to `profinder.find_profiles`.
+        `settings.speed_threshold_direction` (not `settings.direction`)
+        is forwarded as `profinder.find_profiles`'s own ``direction``
+        argument.
 
     Returns
     -------
     list[Profile]
-        One `Profile` per identified profile, in the order `profinder`
-        returns them.
+        One `Profile` per identified turnaround cycle, in the order
+        `profinder` returns them.
 
     Raises
     ------
@@ -113,10 +128,42 @@ def find_profiles(dataset: Dataset, settings: ProfileSettings) -> list[Profile]:
         apply_speed_threshold=settings.apply_speed_threshold,
         time=time_seconds,
         min_speed=settings.min_speed,
-        direction=settings.direction,
+        direction=settings.speed_threshold_direction,
         missing=missing,
     )
 
     profiles = [Profile(*profile) for profile in raw_profiles]
     logger.info("found %d profile(s)", len(profiles))
     return profiles
+
+
+def resolve_cast_slices(
+    profile: Profile, direction: Literal["up", "down", "both"]
+) -> list[slice]:
+    """Resolve the cast segment(s) of `profile` to extract as profiles.
+
+    Never includes the dwell between `profile.down_end` and
+    `profile.up_start` (e.g. time spent at the bottom of a cast) in any
+    returned slice, regardless of `direction`.
+
+    Parameters
+    ----------
+    profile : Profile
+        One identified turnaround cycle (see `find_profiles`).
+    direction : {"up", "down", "both"}
+        Which cast direction(s) to extract, e.g.
+        `ctd_processing.config.ProfileSettings.direction`.
+
+    Returns
+    -------
+    list[slice]
+        ``[slice(profile.down_start, profile.down_end)]`` for
+        ``"down"``; ``[slice(profile.up_start, profile.up_end)]`` for
+        ``"up"``; both, downcast first, for ``"both"``.
+    """
+    slices = []
+    if direction in ("down", "both"):
+        slices.append(slice(profile.down_start, profile.down_end))
+    if direction in ("up", "both"):
+        slices.append(slice(profile.up_start, profile.up_end))
+    return slices

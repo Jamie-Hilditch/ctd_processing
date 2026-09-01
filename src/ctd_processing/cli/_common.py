@@ -9,7 +9,7 @@ from ctd_processing.cli._logging import configure_file_logging
 from ctd_processing.config import Settings, load_settings
 
 
-def resolve_settings(config: Path | None, set_: list[str]) -> Settings:
+def resolve_settings(config: Path, set_: list[str]) -> Settings:
     """Load :class:`Settings`, converting loading errors into a clean CLI exit.
 
     Also configures file logging from the loaded settings'
@@ -19,9 +19,11 @@ def resolve_settings(config: Path | None, set_: list[str]) -> Settings:
 
     Parameters
     ----------
-    config : pathlib.Path or None
-        Path to a TOML configuration file, or ``None`` to use field
-        defaults only.
+    config : pathlib.Path
+        Path to a TOML configuration file. Existence is already
+        validated by the CLI's ``--config`` option (see
+        `ctd_processing.cli._options.ConfigOption`) before this is
+        called.
     set_ : list of str
         ``--set key=value`` override strings to apply on top of `config`.
 
@@ -33,10 +35,9 @@ def resolve_settings(config: Path | None, set_: list[str]) -> Settings:
     Raises
     ------
     typer.Exit
-        Raised with exit code 1 if `config` does not exist, an override
-        in `set_` is malformed, or the merged configuration fails
-        validation. In each case a description of the problem is printed
-        to stderr first.
+        Raised with exit code 1 if an override in `set_` is malformed,
+        or the merged configuration fails validation. In each case a
+        description of the problem is printed to stderr first.
     """
     try:
         settings = load_settings(config, set_=set_)

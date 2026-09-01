@@ -6,7 +6,16 @@ from typing import Annotated
 import typer
 
 from ctd_processing.cli._common import resolve_settings
-from ctd_processing.cli._options import SetOption
+from ctd_processing.cli._logging import configure_cli_logging
+from ctd_processing.cli._options import (
+    ConfigOption,
+    DebugOption,
+    LogLevel,
+    LogLevelOption,
+    NoStdoutLogOption,
+    SetOption,
+    VerboseOption,
+)
 from ctd_processing.process import process_deployment_files
 
 
@@ -85,18 +94,12 @@ def process_command(
             "top-level .rsk file in rsk_directory is processed.",
         ),
     ] = None,
-    config: Annotated[
-        Path | None,
-        typer.Option(
-            "--config",
-            "-c",
-            exists=True,
-            dir_okay=False,
-            help="Path to a TOML configuration file. If omitted, "
-            "built-in defaults are used.",
-        ),
-    ] = None,
+    config: ConfigOption = Path("config.toml"),
     set_: SetOption = None,
+    log_level: LogLevelOption = LogLevel.INFO,
+    verbose: VerboseOption = False,
+    debug: DebugOption = False,
+    no_stdout_log: NoStdoutLogOption = False,
 ) -> None:
     """Process raw RBR .rsk deployments into derived oceanographic variables.
 
@@ -116,21 +119,38 @@ def process_command(
         to ``settings.paths.rsk_directory``. May be repeated. If not
         given, every top-level ``.rsk`` file in ``rsk_directory`` is
         processed.
-    config : pathlib.Path or None, optional
-        Path to a TOML configuration file. If not given, built-in
-        `ctd_processing.config.Settings` defaults are used.
+    config : pathlib.Path, optional
+        Path to a TOML configuration file. Defaults to ``config.toml`` in
+        the current directory; Typer validates that this path exists
+        (whether given explicitly or left at its default) before this
+        function runs.
     set_ : list of str or None, optional
         ``--set key=value`` overrides to apply on top of `config`.
+    log_level : LogLevel, optional
+        Minimum log level to emit. Overridden by `verbose`/`debug` when
+        either is given.
+    verbose : bool, optional
+        If given, emit VERBOSE-level (and above) log records regardless
+        of `log_level`. Overridden by `debug`.
+    debug : bool, optional
+        If given, emit DEBUG-level (and above) log records regardless of
+        `log_level`/`verbose` -- DEBUG is more detailed than VERBOSE, so
+        this includes every VERBOSE record too.
+    no_stdout_log : bool, optional
+        If given, log records are not written to stdout. Independent
+        of any ``paths.log_file``/``paths.error_log_file`` configured
+        for this command.
 
     Raises
     ------
     typer.Exit
-        Raised with exit code 1 if `config`/`set_` produce invalid
-        settings, if `target` cannot be resolved against
-        ``rsk_directory`` (see :func:`resolve_deployment_files`), or
-        unconditionally once deployment files have been resolved, since
+        Raised with exit code 1 if `set_` produces invalid settings, if
+        `target` cannot be resolved against ``rsk_directory`` (see
+        :func:`resolve_deployment_files`), or unconditionally once
+        deployment files have been resolved, since
         processing is not yet implemented.
     """
+    configure_cli_logging(log_level, verbose, debug, no_stdout_log)
     settings = resolve_settings(config, set_ or [])
 
     try:

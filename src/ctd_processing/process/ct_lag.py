@@ -6,8 +6,8 @@ shifts and scoring each by the standard deviation of a high-pass-filtered
 derived salinity, then applying the best one -- with two deliberate
 differences:
 
-- A single, deployment-wide shift is computed from every profile's
-  residuals pooled together, rather than one shift per profile.
+- A single, deployment-wide shift is computed from every resolved output
+  profile's residuals pooled together, rather than one shift per profile.
 - The high-pass filter is a numba-jitted moving average instead of
   pyrsktools' ``utils.runavg``, a pure-Python generator that calls
   ``np.nanmean`` sample by sample; that, run once per lag trial per
@@ -30,7 +30,6 @@ import numpy.typing as npt
 from ctd_processing.config import CTLagSettings
 from ctd_processing.process._shift import shift_array
 from ctd_processing.process.dataset import Dataset
-from ctd_processing.process.profiles import Profile
 from ctd_processing.process.raw_channels import shift_time
 
 logger = logging.getLogger(__name__)
@@ -83,17 +82,17 @@ def _moving_nanmean(
 
 
 def calculate_ct_lag(
-    dataset: Dataset, profiles: list[Profile], settings: CTLagSettings
+    dataset: Dataset, spans: list[slice], settings: CTLagSettings
 ) -> int:
     """Calculate a single, deployment-wide conductivity/temperature lag.
 
     For every candidate lag in ``[settings.min_lag, settings.max_lag]``,
-    each profile's `sea_water_electrical_conductivity` is trial-shifted by
+    each span's `electrical_conductivity` is trial-shifted by
     that lag, a practical salinity is derived from it via
     `gsw.SP_from_C` (TEOS-10), and the residual between that salinity and
     its `_moving_nanmean`-smoothed version is computed -- the same
     salinity-spiking score pyrsktools' ``calculateCTlag`` uses. Every
-    profile's finite residuals for a given lag are pooled into one array
+    span's finite residuals for a given lag are pooled into one array
     before taking its standard deviation, so the result is the single lag
     that minimizes spiking across the whole deployment at once, not the
     best lag for any one profile.
@@ -102,15 +101,18 @@ def calculate_ct_lag(
     ----------
     dataset : Dataset
         The dataset to calculate a lag for. Must have
-        `sea_water_electrical_conductivity`, `sea_water_temperature`, and
+        `electrical_conductivity`, `temperature`, and
         `sea_pressure` channels.
-    profiles : list[Profile]
-        Profile boundaries within `dataset` (see
-        `ctd_processing.process.profiles.find_profiles`). Each profile's
-        full cast span (``down_start`` through ``up_end``) is used.
+    spans : list[slice]
+        The exact spans that will be extracted and written out as
+        profiles (see `ctd_processing.process.profiles.resolve_cast_slices`),
+        so the lag is fit only against the data that actually ends up in
+        the output -- never against the dwell between a turnaround's
+        downcast and upcast, and never against a cast direction excluded
+        by `ctd_processing.config.ProfileSettings.direction`.
     settings : CTLagSettings
         `sea_pressure_min`/`sea_pressure_max` restrict which samples of
-        each profile feed the search; `window_length`, `min_lag`, and
+        each span feed the search; `window_length`, `min_lag`, and
         `max_lag` configure it. `settings.enabled` is not consulted here
         -- that gate belongs to the caller (`process_ct_lag`).
 
@@ -118,20 +120,20 @@ def calculate_ct_lag(
     -------
     int
         The lag, in samples, that minimizes pooled residual salinity
-        spiking across every profile. Ties are broken by the
+        spiking across every span. Ties are broken by the
         smallest-magnitude signed lag.
 
     Raises
     ------
     ValueError
         If `dataset` is missing any of the required channels, or if no
-        candidate lag produces any finite residual at all (e.g. `profiles`
+        candidate lag produces any finite residual at all (e.g. `spans`
         is empty, or `sea_pressure_min`/`sea_pressure_max` excludes every
         sample).
     """
     for name in (
-        "sea_water_electrical_conductivity",
-        "sea_water_temperature",
+        "electrical_conductivity",
+        "temperature",
         "sea_pressure",
     ):
         if name not in dataset.channels:
@@ -139,8 +141,8 @@ def calculate_ct_lag(
                 f"Cannot calculate CT lag: dataset has no {name} channel."
             )
 
-    conductivity = dataset.channels["sea_water_electrical_conductivity"].data
-    temperature = dataset.channels["sea_water_temperature"].data
+    conductivity = dataset.channels["electrical_conductivity"].data
+    temperature = dataset.channels["temperature"].data
     sea_pressure = dataset.channels["sea_pressure"].data
 
     pressure_min = (
@@ -153,7 +155,6 @@ def calculate_ct_lag(
         if settings.sea_pressure_max is not None
         else np.inf
     )
-    spans = [slice(profile.down_start, profile.up_end) for profile in profiles]
 
     lags = list(range(settings.min_lag, settings.max_lag + 1))
     scores = np.full(len(lags), np.inf)
@@ -183,7 +184,7 @@ def calculate_ct_lag(
     if not np.isfinite(scores).any():
         raise ValueError(
             "Cannot calculate CT lag: no finite salinity residuals in any "
-            "profile (empty profiles, or sea_pressure_min/sea_pressure_max "
+            "span (empty spans, or sea_pressure_min/sea_pressure_max "
             "excluded every sample)."
         )
 
@@ -196,13 +197,13 @@ def calculate_ct_lag(
 
 
 def process_ct_lag(
-    dataset: Dataset, profiles: list[Profile], settings: CTLagSettings
+    dataset: Dataset, spans: list[slice], settings: CTLagSettings
 ) -> Dataset:
     """Compute and apply the configured CT lag correction to `dataset`.
 
     If `settings.enabled` is ``False``, `dataset` is returned unchanged.
     Otherwise, calculates the lag via `calculate_ct_lag` and applies it to
-    the `sea_water_electrical_conductivity` channel via
+    the `electrical_conductivity` channel via
     `ctd_processing.process.raw_channels.shift_time`, which already
     records the shift in the channel's history and logs it at `VERBOSE`
     -- no additional logging of the mutation is needed here.
@@ -212,8 +213,8 @@ def process_ct_lag(
     dataset : Dataset
         The dataset to correct. Mutated in place when `settings.enabled`
         is ``True``; see `calculate_ct_lag` for the required channels.
-    profiles : list[Profile]
-        Profile boundaries within `dataset`, forwarded to
+    spans : list[slice]
+        The resolved output profile spans within `dataset`, forwarded to
         `calculate_ct_lag`.
     settings : CTLagSettings
         Whether and how to calculate and apply the lag.
@@ -227,6 +228,6 @@ def process_ct_lag(
         logger.info("Skipping CT lag correction (not enabled).")
         return dataset
 
-    lag = calculate_ct_lag(dataset, profiles, settings)
-    shift_time(dataset.channels["sea_water_electrical_conductivity"], lag)
+    lag = calculate_ct_lag(dataset, spans, settings)
+    shift_time(dataset.channels["electrical_conductivity"], lag)
     return dataset

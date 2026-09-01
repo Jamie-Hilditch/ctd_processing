@@ -12,7 +12,6 @@ from ctd_processing.process._shift import shift_array
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.ct_lag import calculate_ct_lag, process_ct_lag
 from ctd_processing.process.dataset import Dataset
-from ctd_processing.process.profiles import Profile
 
 
 def _dataset(
@@ -24,11 +23,9 @@ def _dataset(
     n = len(conductivity)
     dataset = Dataset(time=Channel(data=np.arange(float(n))))
     dataset.add_channel(
-        "sea_water_electrical_conductivity", Channel(data=conductivity.copy())
+        "electrical_conductivity", Channel(data=conductivity.copy())
     )
-    dataset.add_channel(
-        "sea_water_temperature", Channel(data=temperature.copy())
-    )
+    dataset.add_channel("temperature", Channel(data=temperature.copy()))
     dataset.add_channel("sea_pressure", Channel(data=sea_pressure.copy()))
     return dataset
 
@@ -50,7 +47,7 @@ def _injected_shift_dataset(
 ) -> tuple[Dataset, np.ndarray]:
     """Build a dataset with conductivity `true_shift` samples off temperature.
 
-    `sea_water_temperature` is set to an aperiodic noise sequence and the
+    `temperature` is set to an aperiodic noise sequence and the
     "true" (aligned) conductivity to a smooth trend plus that same noise,
     so that only shifting the measured conductivity by exactly
     `-true_shift` cancels the noise and recovers the smooth trend (near
@@ -72,7 +69,7 @@ def _injected_shift_dataset(
 def test_calculate_ct_lag_recovers_injected_shift_pooled_across_profiles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The chosen lag reflects residuals pooled across every profile at once."""
+    """The chosen lag reflects residuals pooled across every span at once."""
     _stub_salinity(monkeypatch)
     profile_length = 80
     n = profile_length * 2
@@ -86,18 +83,10 @@ def test_calculate_ct_lag_recovers_injected_shift_pooled_across_profiles(
         noise,
         np.tile(np.arange(float(profile_length)), 2),
     )
-    profiles = [
-        Profile(
-            down_start=0,
-            down_end=profile_length,
-            up_start=profile_length,
-            up_end=profile_length,
-        ),
-        Profile(down_start=profile_length, down_end=n, up_start=n, up_end=n),
-    ]
+    spans = [slice(0, profile_length), slice(profile_length, n)]
     settings = CTLagSettings(min_lag=-10, max_lag=10, window_length=5)
 
-    lag = calculate_ct_lag(dataset, profiles, settings)
+    lag = calculate_ct_lag(dataset, spans, settings)
 
     assert lag == -true_shift
 
@@ -108,7 +97,6 @@ def test_calculate_ct_lag_respects_sea_pressure_range(
     """Restricting sea_pressure still recovers the injected shift."""
     _stub_salinity(monkeypatch)
     dataset, _ = _injected_shift_dataset(seed=1, true_shift=-2)
-    profile = Profile(down_start=0, down_end=80, up_start=80, up_end=80)
     settings = CTLagSettings(
         min_lag=-10,
         max_lag=10,
@@ -117,7 +105,7 @@ def test_calculate_ct_lag_respects_sea_pressure_range(
         sea_pressure_max=70.0,
     )
 
-    lag = calculate_ct_lag(dataset, [profile], settings)
+    lag = calculate_ct_lag(dataset, [slice(0, 80)], settings)
 
     assert lag == 2
 
@@ -125,8 +113,8 @@ def test_calculate_ct_lag_respects_sea_pressure_range(
 @pytest.mark.parametrize(
     "missing_channel",
     [
-        "sea_water_electrical_conductivity",
-        "sea_water_temperature",
+        "electrical_conductivity",
+        "temperature",
         "sea_pressure",
     ],
 )
@@ -134,8 +122,8 @@ def test_calculate_ct_lag_missing_channel_raises(missing_channel: str) -> None:
     """A missing required channel raises ValueError naming it."""
     n = 5
     channels = {
-        "sea_water_electrical_conductivity": np.arange(float(n)),
-        "sea_water_temperature": np.arange(float(n)),
+        "electrical_conductivity": np.arange(float(n)),
+        "temperature": np.arange(float(n)),
         "sea_pressure": np.arange(float(n)),
     }
     del channels[missing_channel]
@@ -150,7 +138,7 @@ def test_calculate_ct_lag_missing_channel_raises(missing_channel: str) -> None:
 def test_calculate_ct_lag_raises_when_no_profiles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An empty profiles list leaves nothing to score."""
+    """An empty spans list leaves nothing to score."""
     _stub_salinity(monkeypatch)
     n = 10
     dataset = _dataset(np.arange(float(n)), np.zeros(n), np.arange(float(n)))
@@ -166,11 +154,10 @@ def test_calculate_ct_lag_raises_when_sea_pressure_range_excludes_everything(
     _stub_salinity(monkeypatch)
     n = 10
     dataset = _dataset(np.arange(float(n)), np.zeros(n), np.arange(float(n)))
-    profile = Profile(down_start=0, down_end=n, up_start=n, up_end=n)
     settings = CTLagSettings(sea_pressure_min=100.0)
 
     with pytest.raises(ValueError, match="no finite salinity residuals"):
-        calculate_ct_lag(dataset, [profile], settings)
+        calculate_ct_lag(dataset, [slice(0, n)], settings)
 
 
 def test_calculate_ct_lag_tie_break_prefers_smallest_magnitude(
@@ -185,10 +172,9 @@ def test_calculate_ct_lag_tie_break_prefers_smallest_magnitude(
     _stub_salinity(monkeypatch)
     n = 40
     dataset = _dataset(np.full(n, 35.0), np.full(n, 10.0), np.arange(float(n)))
-    profile = Profile(down_start=0, down_end=n, up_start=n, up_end=n)
     settings = CTLagSettings(min_lag=-10, max_lag=10, window_length=5)
 
-    lag = calculate_ct_lag(dataset, [profile], settings)
+    lag = calculate_ct_lag(dataset, [slice(0, n)], settings)
 
     assert lag == 0
 
@@ -198,14 +184,14 @@ def test_process_ct_lag_disabled_skips_and_logs_info(
 ) -> None:
     """settings.enabled=False leaves the dataset untouched."""
     dataset = _dataset(np.arange(5.0), np.arange(5.0), np.arange(5.0))
-    original = dataset.channels["sea_water_electrical_conductivity"].data.copy()
+    original = dataset.channels["electrical_conductivity"].data.copy()
     caplog.set_level(logging.INFO, logger="ctd_processing.process.ct_lag")
 
     result = process_ct_lag(dataset, [], CTLagSettings(enabled=False))
 
     assert result is dataset
     assert np.array_equal(
-        result.channels["sea_water_electrical_conductivity"].data, original
+        result.channels["electrical_conductivity"].data, original
     )
     messages = [record.getMessage() for record in caplog.records]
     assert any("not enabled" in m for m in messages)
@@ -221,7 +207,6 @@ def test_process_ct_lag_enabled_applies_calculated_shift(
     dataset, conductivity_measured = _injected_shift_dataset(
         seed=3, true_shift=true_shift
     )
-    profile = Profile(down_start=0, down_end=80, up_start=80, up_end=80)
     settings = CTLagSettings(
         enabled=True, min_lag=-10, max_lag=10, window_length=5
     )
@@ -232,14 +217,14 @@ def test_process_ct_lag_enabled_applies_calculated_shift(
     caplog.set_level(logging.INFO, logger="ctd_processing.process.ct_lag")
     caplog.set_level(VERBOSE, logger="ctd_processing.process.raw_channels")
 
-    result = process_ct_lag(dataset, [profile], settings)
+    result = process_ct_lag(dataset, [slice(0, 80)], settings)
 
     assert result is dataset
     expected = shift_array(conductivity_measured, -true_shift)
-    actual = result.channels["sea_water_electrical_conductivity"].data
+    actual = result.channels["electrical_conductivity"].data
     np.testing.assert_array_equal(actual[20:-20], expected[20:-20])
 
-    history = result.channels["sea_water_electrical_conductivity"].history
+    history = result.channels["electrical_conductivity"].history
     assert any("shifted by" in entry for entry in history)
 
     messages = [record.getMessage() for record in caplog.records]

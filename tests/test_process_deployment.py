@@ -13,8 +13,10 @@ import xarray as xr
 
 import ctd_processing.process as process_module
 from ctd_processing.config import (
+    ChannelSettings,
     DeploymentSettings,
     DerivedVariablesSettings,
+    DespikeChannelOverride,
     GeolocationSettings,
     InstrumentSettings,
     PathsSettings,
@@ -89,9 +91,11 @@ def test_process_deployment_writes_one_file_per_profile(
         for m in messages
         if "Identified" in m and "profile(s)" in m
     )
-    written_files = list(profiles_directory.glob(f"*{extension}"))
+    written_files = list(profiles_directory.rglob(f"*{extension}"))
     assert identified > 0
     assert len(written_files) == identified
+    deployment_directory = profiles_directory / example_rsk_path.stem
+    assert all(f.parent == deployment_directory for f in written_files)
 
     if profile_format == "parquet":
         metadata = json.loads(
@@ -181,7 +185,7 @@ def _count_identified_and_written(
         for m in messages
         if "Identified" in m and "profile(s)" in m
     )
-    written = len(list(profiles_directory.glob("*.parquet")))
+    written = len(list(profiles_directory.rglob("*.parquet")))
     return identified, written
 
 
@@ -259,7 +263,7 @@ def test_process_deployment_computes_oxygen_concentration_from_saturation(
 
     process_deployment(example_rsk_path_oxygen, profiles_directory, settings)
 
-    written_files = list(profiles_directory.glob("*.parquet"))
+    written_files = list(profiles_directory.rglob("*.parquet"))
     assert written_files
     profile_dataset = load_profile(written_files[0])
 
@@ -283,11 +287,14 @@ def _stub_pipeline(monkeypatch: pytest.MonkeyPatch, serial_number: str) -> dict:
     """
     captured: dict = {}
 
-    monkeypatch.setattr(process_module, "read_rsk", lambda file: object())
+    fake_rsk = SimpleNamespace(
+        instrument=SimpleNamespace(serialID=serial_number)
+    )
+    monkeypatch.setattr(process_module, "read_rsk", lambda file: fake_rsk)
     monkeypatch.setattr(
         process_module,
         "build_dataset",
-        lambda rsk, file, project: SimpleNamespace(
+        lambda rsk, file, project, read_channels=None: SimpleNamespace(
             metadata={"instrument_serial_number": serial_number}
         ),
     )
@@ -310,7 +317,7 @@ def _stub_pipeline(monkeypatch: pytest.MonkeyPatch, serial_number: str) -> dict:
     monkeypatch.setattr(
         process_module,
         "process_ct_lag",
-        lambda dataset, profiles, settings: dataset,
+        lambda dataset, spans, settings: dataset,
     )
 
     def fake_process_profile(
@@ -322,7 +329,7 @@ def _stub_pipeline(monkeypatch: pytest.MonkeyPatch, serial_number: str) -> dict:
     monkeypatch.setattr(
         process_module,
         "save_profile",
-        lambda dataset, profile_dataset, index, total, directory, format: (
+        lambda dataset, profile_dataset, index, directory, format: (
             directory / f"profile_{index}.{format}"
         ),
     )
@@ -448,18 +455,21 @@ def test_process_deployment_applies_derived_variables_override(
     assert captured["process_settings"].derived_variables.sound_speed is True
 
 
-def test_process_deployment_applies_despike_channels_override(
+def test_process_deployment_applies_despike_channel_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A [process.despike_channels] override reaches ProcessSettings."""
+    """A [process.channels.<name>.despiking] override reaches settings."""
     captured = _stub_pipeline(monkeypatch, serial_number="208532")
     settings = _settings(
         tmp_path,
         instruments={
             "208532": InstrumentSettings(
                 process={
-                    "despike_channels": {
-                        "practical_salinity": {"threshold": 3.0}
+                    "channels": {
+                        "practical_salinity": {
+                            "despike": True,
+                            "despiking": {"threshold": 3.0},
+                        }
                     }
                 }
             )
@@ -472,8 +482,11 @@ def test_process_deployment_applies_despike_channels_override(
         settings,
     )
 
-    assert captured["process_settings"].despike_channels == {
-        "practical_salinity": {"threshold": 3.0}
+    assert captured["process_settings"].channels == {
+        "practical_salinity": ChannelSettings(
+            despike=True,
+            despiking=DespikeChannelOverride(threshold=3.0),
+        )
     }
 
 
@@ -484,7 +497,9 @@ def test_process_deployment_calls_process_profile_and_save_profile_per_profile(
     _stub_pipeline(monkeypatch, serial_number="208532")
     dataset = _real_deployment_dataset(10)
     monkeypatch.setattr(
-        process_module, "build_dataset", lambda rsk, file, project: dataset
+        process_module,
+        "build_dataset",
+        lambda rsk, file, project, read_channels=None: dataset,
     )
     profiles = _two_profiles(10)
     monkeypatch.setattr(
@@ -504,8 +519,8 @@ def test_process_deployment_calls_process_profile_and_save_profile_per_profile(
     monkeypatch.setattr(
         process_module,
         "save_profile",
-        lambda deployment_dataset, pd, index, total, directory, format: (
-            save_profile_calls.append((pd, index, total)),
+        lambda deployment_dataset, pd, index, directory, format: (
+            save_profile_calls.append((pd, index)),
             directory / f"p{index}.{format}",
         )[1],
     )
@@ -517,10 +532,99 @@ def test_process_deployment_calls_process_profile_and_save_profile_per_profile(
     )
 
     assert [pd.length for pd in process_profile_calls] == [5, 5]
-    assert [(index, total) for (_, index, total) in save_profile_calls] == [
-        (0, 2),
-        (1, 2),
-    ]
+    assert [index for (_, index) in save_profile_calls] == [0, 1]
+
+
+def test_process_deployment_direction_both_splits_into_two_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """direction="both" writes the downcast and upcast as two profiles.
+
+    Uses a profile with a real (non-empty) dwell between down_end and
+    up_start, and asserts neither extracted profile is as long as the
+    full down_start:up_end span would be -- proving the dwell itself was
+    excluded, not just that two profiles were produced.
+    """
+    _stub_pipeline(monkeypatch, serial_number="208532")
+    dataset = _real_deployment_dataset(12)
+    monkeypatch.setattr(
+        process_module,
+        "build_dataset",
+        lambda rsk, file, project, read_channels=None: dataset,
+    )
+    profile = Profile(down_start=0, down_end=4, up_start=6, up_end=10)
+    monkeypatch.setattr(
+        process_module, "find_profiles", lambda dataset, settings: [profile]
+    )
+
+    process_profile_calls: list[Dataset] = []
+
+    def fake_process_profile(
+        pd, geolocation, external_dataset, derived_variables, despike=None
+    ):
+        process_profile_calls.append(pd)
+        return pd
+
+    monkeypatch.setattr(process_module, "process_profile", fake_process_profile)
+    monkeypatch.setattr(
+        process_module,
+        "save_profile",
+        lambda deployment_dataset, pd, index, directory, format: (
+            directory / f"p{index}.{format}"
+        ),
+    )
+
+    settings = _settings(tmp_path)
+    settings.process.profiles.direction = "both"
+
+    process_deployment(
+        tmp_path / "rsk" / "243188_20260809_0304.rsk",
+        tmp_path / "profiles",
+        settings,
+    )
+
+    assert [pd.length for pd in process_profile_calls] == [4, 4]
+
+
+def test_process_deployment_passes_resolved_spans_to_ct_lag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """process_ct_lag receives the resolved output spans, not the full cycle.
+
+    With direction="down" (the default), the dwell between down_end and
+    up_start, and the upcast itself, must be excluded from the span
+    handed to process_ct_lag -- it should only ever see the same data
+    that will actually be written out as a profile.
+    """
+    _stub_pipeline(monkeypatch, serial_number="208532")
+    dataset = _real_deployment_dataset(12)
+    monkeypatch.setattr(
+        process_module,
+        "build_dataset",
+        lambda rsk, file, project, read_channels=None: dataset,
+    )
+    profile = Profile(down_start=0, down_end=4, up_start=6, up_end=10)
+    monkeypatch.setattr(
+        process_module, "find_profiles", lambda dataset, settings: [profile]
+    )
+
+    ct_lag_calls: list[list[slice]] = []
+    monkeypatch.setattr(
+        process_module,
+        "process_ct_lag",
+        lambda dataset, spans, settings: (
+            ct_lag_calls.append(spans),
+            dataset,
+        )[1],
+    )
+
+    process_deployment(
+        tmp_path / "rsk" / "243188_20260809_0304.rsk",
+        tmp_path / "profiles",
+        _settings(tmp_path),
+    )
+
+    assert ct_lag_calls == [[slice(0, 4)]]
 
 
 def test_process_deployment_opens_external_geolocation_dataset_once(
@@ -530,7 +634,9 @@ def test_process_deployment_opens_external_geolocation_dataset_once(
     _stub_pipeline(monkeypatch, serial_number="208532")
     dataset = _real_deployment_dataset(10)
     monkeypatch.setattr(
-        process_module, "build_dataset", lambda rsk, file, project: dataset
+        process_module,
+        "build_dataset",
+        lambda rsk, file, project, read_channels=None: dataset,
     )
     monkeypatch.setattr(
         process_module,
@@ -547,7 +653,7 @@ def test_process_deployment_opens_external_geolocation_dataset_once(
     monkeypatch.setattr(
         process_module,
         "save_profile",
-        lambda deployment_dataset, pd, index, total, directory, format: (
+        lambda deployment_dataset, pd, index, directory, format: (
             directory / f"p{index}"
         ),
     )

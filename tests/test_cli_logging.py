@@ -27,13 +27,19 @@ def _reset_logging():
 
 
 def _other_paths(tmp_path: Path) -> list[str]:
-    """CLI args for profiles_directory/binned_directory/geolocation.
+    """CLI args for --config plus profiles/binned directories and geolocation.
 
-    `geolocation` is included here (not just the two required `paths`
-    fields) since `[process.geolocation]` is itself required -- see
-    `ctd_processing.config.GeolocationSettings`.
+    An empty ``config.toml`` is written into `tmp_path` and pointed to
+    via ``--config`` since that option now defaults to ``config.toml``
+    and must exist. `geolocation` is included here (not just the two
+    required `paths` fields) since `[process.geolocation]` is itself
+    required -- see `ctd_processing.config.GeolocationSettings`.
     """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
     return [
+        "--config",
+        str(config_path),
         "--set",
         f'paths.profiles_directory="{(tmp_path / "profiles").as_posix()}"',
         "--set",
@@ -143,9 +149,9 @@ def test_cli_log_level_controls_emitted_records(
     result = runner.invoke(
         app,
         [
+            "process",
             "--log-level",
             "DEBUG",
-            "process",
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -167,8 +173,8 @@ def test_cli_no_stdout_log_silences_log_records(
     result = runner.invoke(
         app,
         [
-            "--no-stdout-log",
             "process",
+            "--no-stdout-log",
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -191,8 +197,8 @@ def test_cli_verbose_shows_verbose_level_messages(
     result = runner.invoke(
         app,
         [
-            "--verbose",
             "process",
+            "--verbose",
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -237,8 +243,8 @@ def test_cli_debug_implies_verbose(
     result = runner.invoke(
         app,
         [
-            "--debug",
             "process",
+            "--debug",
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -261,9 +267,9 @@ def test_cli_debug_overrides_verbose_when_both_given(
     result = runner.invoke(
         app,
         [
+            "process",
             "--verbose",
             "--debug",
-            "process",
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -285,10 +291,10 @@ def test_cli_debug_overrides_explicit_log_level(
     result = runner.invoke(
         app,
         [
+            "process",
             "--log-level",
             "ERROR",
             "--debug",
-            "process",
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -310,9 +316,9 @@ def test_cli_log_level_verbose_choice(
     result = runner.invoke(
         app,
         [
+            "process",
             "--log-level",
             "VERBOSE",
-            "process",
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -346,9 +352,9 @@ def test_cli_process_writes_split_log_files(
     result = runner.invoke(
         app,
         [
+            "process",
             "--log-level",
             "DEBUG",
-            "process",
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
             "--set",

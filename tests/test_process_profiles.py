@@ -7,7 +7,11 @@ from profinder import synthetic_glider_pressure
 from ctd_processing.config import ProfileSettings
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
-from ctd_processing.process.profiles import Profile, find_profiles
+from ctd_processing.process.profiles import (
+    Profile,
+    find_profiles,
+    resolve_cast_slices,
+)
 
 
 def _dataset_with_sea_pressure(pressure: np.ndarray) -> Dataset:
@@ -65,3 +69,31 @@ def test_find_profiles_with_speed_threshold_runs_without_error() -> None:
     profiles = find_profiles(dataset, settings)
 
     assert isinstance(profiles, list)
+
+
+_PROFILE = Profile(down_start=0, down_end=4, up_start=5, up_end=9)
+
+
+def test_resolve_cast_slices_down_returns_only_downcast() -> None:
+    """direction="down" returns just the downcast slice."""
+    assert resolve_cast_slices(_PROFILE, "down") == [slice(0, 4)]
+
+
+def test_resolve_cast_slices_up_returns_only_upcast() -> None:
+    """direction="up" returns just the upcast slice."""
+    assert resolve_cast_slices(_PROFILE, "up") == [slice(5, 9)]
+
+
+def test_resolve_cast_slices_both_returns_downcast_then_upcast() -> None:
+    """direction="both" returns the downcast and upcast, in that order."""
+    assert resolve_cast_slices(_PROFILE, "both") == [slice(0, 4), slice(5, 9)]
+
+
+def test_resolve_cast_slices_never_includes_the_dwell() -> None:
+    """The dwell between down_end and up_start (index 4) is never returned."""
+    for direction in ("down", "up", "both"):
+        for cast_slice in resolve_cast_slices(_PROFILE, direction):
+            assert (
+                cast_slice.stop <= _PROFILE.down_end
+                or cast_slice.start >= _PROFILE.up_start
+            )

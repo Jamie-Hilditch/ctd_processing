@@ -5,26 +5,45 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import xarray as xr
 from typer.testing import CliRunner
 
+from ctd_processing.bin.save import save_binned_dataset
 from ctd_processing.cli import app
+from ctd_processing.config import (
+    BinSettings,
+    GeolocationSettings,
+    ProcessSettings,
+)
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
-from ctd_processing.process.save import save_profile
+from ctd_processing.process.save import profile_filename
+from ctd_processing.process.save_netcdf import write_netcdf
 
 runner = CliRunner()
+
+_PROCESS_SETTINGS = ProcessSettings(
+    geolocation=GeolocationSettings(
+        reference_latitude=0.0, reference_longitude=0.0
+    )
+)
 
 
 def _write_profile(
     directory: Path,
     index: int,
-    total: int,
     *,
     start: str,
     serial: int = 208532,
     source_file: str = "243188_20260809_0304.rsk",
 ) -> Path:
-    """Write one small, already-processed profile file for bin CLI tests."""
+    """Write one small, already-processed profile file into `directory`.
+
+    Unlike `ctd_processing.process.save.save_profile`, this does not nest
+    the file under a deployment-stem subdirectory -- these bin CLI tests
+    exercise `bin`'s own handling of a profile directory, independent of
+    where `process` happens to write its output.
+    """
     n = 5
     time = Channel(
         data=np.datetime64(start) + np.arange(n) * np.timedelta64(1, "s")
@@ -48,17 +67,41 @@ def _write_profile(
             "longitude": -125.0,
         }
     )
-    return save_profile(dataset, dataset, index, total, directory, "netcdf")
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / profile_filename(dataset, index, "nc")
+    write_netcdf(dataset, path, _PROCESS_SETTINGS)
+    return path
+
+
+def _write_binned(directory: Path, stem: str, times: list[str]) -> Path:
+    """Write a minimal binned dataset, for concatenate CLI tests."""
+    n = len(times)
+    dataset = xr.Dataset(
+        {"temperature": (("profile", "z"), np.zeros((n, 2)))},
+        coords={
+            "z": ("z", [-0.5, -1.5]),
+            "time": ("profile", np.array(times, dtype="datetime64[s]")),
+            "latitude": ("profile", np.full(n, 45.0)),
+            "longitude": ("profile", np.full(n, -125.0)),
+        },
+    )
+    return save_binned_dataset(dataset, directory, f"{stem}.nc", BinSettings())
 
 
 def _other_paths(tmp_path: Path) -> list[str]:
-    """CLI args for profiles_directory/binned_directory/geolocation.
+    """CLI args for --config plus profiles/binned directories and geolocation.
 
-    `geolocation` is included here (not just the two required `paths`
-    fields) since `[process.geolocation]` is itself required -- see
-    `ctd_processing.config.GeolocationSettings`.
+    An empty ``config.toml`` is written into `tmp_path` and pointed to
+    via ``--config`` since that option now defaults to ``config.toml``
+    and must exist. `geolocation` is included here (not just the two
+    required `paths` fields) since `[process.geolocation]` is itself
+    required -- see `ctd_processing.config.GeolocationSettings`.
     """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
     return [
+        "--config",
+        str(config_path),
         "--set",
         f'paths.profiles_directory="{(tmp_path / "profiles").as_posix()}"',
         "--set",
@@ -307,13 +350,12 @@ def test_init_set_overrides_name_option(tmp_path: Path) -> None:
     assert config["project"]["name"] == "from-set"
 
 
-def test_bin_combines_profile_directory_into_one_dataset(
-    tmp_path: Path,
-) -> None:
-    """Bin on a directory of profiles writes one combined file, exit 0."""
+def test_bin_target_bins_one_named_deployment(tmp_path: Path) -> None:
+    """--target names one deployment stem, binned from its subdirectory."""
     profiles_dir = tmp_path / "profiles"
-    _write_profile(profiles_dir, 0, 2, start="2026-08-09T03:04:00")
-    _write_profile(profiles_dir, 1, 2, start="2026-08-09T04:04:00")
+    deployment_dir = profiles_dir / "243188_20260809_0304"
+    _write_profile(deployment_dir, 0, start="2026-08-09T03:04:00")
+    _write_profile(deployment_dir, 1, start="2026-08-09T04:04:00")
     rsk_dir = tmp_path / "rsk"
     rsk_dir.mkdir()
 
@@ -321,7 +363,8 @@ def test_bin_combines_profile_directory_into_one_dataset(
         app,
         [
             "bin",
-            str(profiles_dir),
+            "--target",
+            "243188_20260809_0304",
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -329,15 +372,23 @@ def test_bin_combines_profile_directory_into_one_dataset(
     )
 
     assert result.exit_code == 0, result.stderr
-    written = list((tmp_path / "binned").glob("*.nc"))
-    assert len(written) == 1
+    assert (tmp_path / "binned" / "243188_20260809_0304.nc").is_file()
     assert "2 profile(s)" in result.stdout
 
 
-def test_bin_accepts_single_profile_file(tmp_path: Path) -> None:
-    """Bin on a single profile file (not a directory) also works."""
+def test_bin_no_target_bins_every_deployment(tmp_path: Path) -> None:
+    """Omitting --target bins every deployment subdirectory found."""
     profiles_dir = tmp_path / "profiles"
-    path = _write_profile(profiles_dir, 0, 1, start="2026-08-09T03:04:00")
+    _write_profile(
+        profiles_dir / "243188_20260809_0304", 0, start="2026-08-09T03:04:00"
+    )
+    _write_profile(
+        profiles_dir / "999999_20260810_0000",
+        0,
+        start="2026-08-10T00:00:00",
+        serial=999999,
+        source_file="999999_20260810_0000.rsk",
+    )
     rsk_dir = tmp_path / "rsk"
     rsk_dir.mkdir()
 
@@ -345,7 +396,6 @@ def test_bin_accepts_single_profile_file(tmp_path: Path) -> None:
         app,
         [
             "bin",
-            str(path),
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -353,11 +403,12 @@ def test_bin_accepts_single_profile_file(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 0, result.stderr
-    assert list((tmp_path / "binned").glob("*.nc"))
+    written = sorted(path.name for path in (tmp_path / "binned").glob("*.nc"))
+    assert written == ["243188_20260809_0304.nc", "999999_20260810_0000.nc"]
 
 
-def test_bin_empty_directory_errors(tmp_path: Path) -> None:
-    """A directory with no profile files exits 1 with a clean message."""
+def test_bin_unknown_target_errors(tmp_path: Path) -> None:
+    """A --target naming a nonexistent deployment exits 1 with a message."""
     profiles_dir = tmp_path / "profiles"
     profiles_dir.mkdir()
     rsk_dir = tmp_path / "rsk"
@@ -367,7 +418,31 @@ def test_bin_empty_directory_errors(tmp_path: Path) -> None:
         app,
         [
             "bin",
-            str(profiles_dir),
+            "--target",
+            "does-not-exist",
+            "--set",
+            f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        ]
+        + _other_paths(tmp_path),
+    )
+
+    assert result.exit_code == 1
+    assert "does not exist" in result.stderr
+
+
+def test_bin_empty_deployment_directory_errors(tmp_path: Path) -> None:
+    """An empty deployment subdirectory exits 1 with a clean message."""
+    profiles_dir = tmp_path / "profiles"
+    (profiles_dir / "243188_20260809_0304").mkdir(parents=True)
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "bin",
+            "--target",
+            "243188_20260809_0304",
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -379,17 +454,23 @@ def test_bin_empty_directory_errors(tmp_path: Path) -> None:
 
 
 def test_bin_mixed_deployment_input_errors(tmp_path: Path) -> None:
-    """Profiles from different deployments exit 1 with a clean message."""
+    """Profiles from different deployments in one subdirectory error cleanly.
+
+    Continues on to bin any other resolved deployment rather than
+    aborting the whole run.
+    """
     profiles_dir = tmp_path / "profiles"
-    _write_profile(profiles_dir, 0, 2, start="2026-08-09T03:04:00")
+    mixed_dir = profiles_dir / "mixed"
+    _write_profile(mixed_dir, 0, start="2026-08-09T03:04:00")
     _write_profile(
-        profiles_dir,
+        mixed_dir,
         1,
-        2,
         start="2026-08-09T04:04:00",
         serial=999999,
         source_file="other_deployment.rsk",
     )
+    good_dir = profiles_dir / "243188_20260809_0304"
+    _write_profile(good_dir, 0, start="2026-08-09T03:04:00")
     rsk_dir = tmp_path / "rsk"
     rsk_dir.mkdir()
 
@@ -397,7 +478,6 @@ def test_bin_mixed_deployment_input_errors(tmp_path: Path) -> None:
         app,
         [
             "bin",
-            str(profiles_dir),
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -406,10 +486,96 @@ def test_bin_mixed_deployment_input_errors(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "multiple deployments" in result.stderr
+    assert (tmp_path / "binned" / "243188_20260809_0304.nc").is_file()
 
 
-def test_concatenate_stub_reports_not_implemented(tmp_path: Path) -> None:
-    """Concatenate stub should report 'not yet implemented' and exit 1."""
+def _concatenated_paths(tmp_path: Path) -> list[str]:
+    """`_other_paths` plus rsk_directory/concatenated_file, for concatenate."""
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir(exist_ok=True)
+    concatenated_file = tmp_path / "concatenated.nc"
+    return _other_paths(tmp_path) + [
+        "--set",
+        f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        "--set",
+        f'paths.concatenated_file="{concatenated_file.as_posix()}"',
+    ]
+
+
+def test_concatenate_target_concatenates_named_deployments(
+    tmp_path: Path,
+) -> None:
+    """--target names which deployments to concatenate, in time order."""
+    binned_dir = tmp_path / "binned"
+    _write_binned(binned_dir, "b", ["2026-08-10T00:00:00"])
+    _write_binned(
+        binned_dir, "a", ["2026-08-09T03:04:00", "2026-08-09T04:04:00"]
+    )
+
+    result = runner.invoke(
+        app,
+        ["concatenate", "--target", "a", "--target", "b"]
+        + _concatenated_paths(tmp_path),
+    )
+
+    assert result.exit_code == 0, result.stderr
+    output = tmp_path / "concatenated.nc"
+    assert output.is_file()
+    with xr.open_dataset(output) as combined:
+        assert combined.sizes["profile"] == 3
+        times = combined["time"].values
+        assert list(times) == sorted(times)
+    assert "3 profile(s)" in result.stdout
+
+
+def test_concatenate_no_target_concatenates_every_deployment(
+    tmp_path: Path,
+) -> None:
+    """Omitting --target concatenates every deployment in binned_directory."""
+    binned_dir = tmp_path / "binned"
+    _write_binned(binned_dir, "a", ["2026-08-09T03:04:00"])
+    _write_binned(binned_dir, "b", ["2026-08-10T00:00:00"])
+
+    result = runner.invoke(app, ["concatenate"] + _concatenated_paths(tmp_path))
+
+    assert result.exit_code == 0, result.stderr
+    with xr.open_dataset(tmp_path / "concatenated.nc") as combined:
+        assert combined.sizes["profile"] == 2
+
+
+def test_concatenate_removes_duplicate_profiles_and_sorts_by_time(
+    tmp_path: Path,
+) -> None:
+    """A profile repeated in a later deployment (unwiped memory) is dropped.
+
+    Simulates forgetting to wipe an instrument's memory between
+    deployments: the second deployment's binned file repeats the first
+    deployment's last profile time in addition to a genuinely new one.
+    """
+    binned_dir = tmp_path / "binned"
+    _write_binned(
+        binned_dir, "first", ["2026-08-09T03:04:00", "2026-08-09T04:04:00"]
+    )
+    _write_binned(
+        binned_dir, "second", ["2026-08-09T04:04:00", "2026-08-10T00:00:00"]
+    )
+
+    result = runner.invoke(app, ["concatenate"] + _concatenated_paths(tmp_path))
+
+    assert result.exit_code == 0, result.stderr
+    with xr.open_dataset(tmp_path / "concatenated.nc") as combined:
+        assert combined.sizes["profile"] == 3
+        times = list(combined["time"].values)
+        assert times == sorted(times)
+        assert len(set(times)) == 3
+
+
+def test_concatenate_missing_concatenated_file_setting_errors(
+    tmp_path: Path,
+) -> None:
+    """paths.concatenated_file left unset exits 1 with a clean message."""
+    binned_dir = tmp_path / "binned"
+    binned_dir.mkdir()
     rsk_dir = tmp_path / "rsk"
     rsk_dir.mkdir()
 
@@ -417,7 +583,6 @@ def test_concatenate_stub_reports_not_implemented(tmp_path: Path) -> None:
         app,
         [
             "concatenate",
-            str(tmp_path),
             "--set",
             f'paths.rsk_directory="{rsk_dir.as_posix()}"',
         ]
@@ -425,27 +590,54 @@ def test_concatenate_stub_reports_not_implemented(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 1
-    assert "not yet implemented" in result.stdout
+    assert "concatenated_file" in result.stderr
 
 
-@pytest.mark.parametrize("command", ["bin", "concatenate"])
-def test_command_missing_input_path_errors(
-    tmp_path: Path, command: str
-) -> None:
-    """A nonexistent input_path fails validation before the command runs."""
-    result = runner.invoke(app, [command, str(tmp_path / "does-not-exist")])
-
-    assert result.exit_code != 0
-
-
-@pytest.mark.parametrize("command", ["bin", "concatenate"])
-def test_command_set_unknown_key_errors(tmp_path: Path, command: str) -> None:
-    """--set with an unknown key exits non-zero with a clean message."""
-    input_path = tmp_path / "cast.rsk"
-    input_path.write_text("", encoding="utf-8")
+def test_concatenate_unknown_target_errors(tmp_path: Path) -> None:
+    """A --target naming a nonexistent deployment exits 1 with a message."""
+    (tmp_path / "binned").mkdir()
 
     result = runner.invoke(
-        app, [command, str(input_path), "--set", "not_a_real_option=1"]
+        app,
+        ["concatenate", "--target", "does-not-exist"]
+        + _concatenated_paths(tmp_path),
+    )
+
+    assert result.exit_code == 1
+    assert "does not exist" in result.stderr
+
+
+def test_concatenate_set_unknown_key_errors(tmp_path: Path) -> None:
+    """--set with an unknown key exits non-zero with a clean message."""
+    (tmp_path / "binned").mkdir()
+
+    result = runner.invoke(
+        app,
+        ["concatenate"]
+        + _concatenated_paths(tmp_path)
+        + ["--set", "not_a_real_option=1"],
+    )
+
+    assert result.exit_code == 1
+    assert result.stderr != ""
+
+
+def test_bin_set_unknown_key_errors(tmp_path: Path) -> None:
+    """--set with an unknown key exits non-zero with a clean message."""
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "bin",
+            "--set",
+            f'paths.rsk_directory="{rsk_dir.as_posix()}"',
+        ]
+        + _other_paths(tmp_path)
+        + ["--set", "not_a_real_option=1"],
     )
 
     assert result.exit_code == 1
@@ -535,6 +727,45 @@ def test_process_set_unknown_key_errors(tmp_path: Path) -> None:
     assert result.exit_code == 1
     assert "not yet implemented" not in result.stdout
     assert result.stderr != ""
+
+
+def test_process_uses_default_config_in_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without --config, a config.toml present in the cwd is loaded."""
+    monkeypatch.setattr(
+        "ctd_processing.cli.process.process_deployment_files", lambda *a: None
+    )
+    rsk_dir = tmp_path / "rsk"
+    rsk_dir.mkdir()
+    (rsk_dir / "deployment.rsk").write_text("", encoding="utf-8")
+    (tmp_path / "config.toml").write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{(tmp_path / "profiles").as_posix()}"\n'
+        f'binned_directory = "{(tmp_path / "binned").as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["process"])
+
+    assert "not yet implemented" in result.stdout
+
+
+def test_process_missing_default_config_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without --config, a missing config.toml in the cwd exits non-zero."""
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["process"])
+
+    assert result.exit_code != 0
+    assert "config.toml" in result.stderr
 
 
 def test_process_missing_rsk_directory_errors(tmp_path: Path) -> None:

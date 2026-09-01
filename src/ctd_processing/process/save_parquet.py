@@ -1,4 +1,4 @@
-"""Read/write a `Dataset` as Parquet via pyarrow, zstd + byte-stream-split.
+"""Read/write a `Dataset` as Parquet via pyarrow, with byte-stream-split.
 
 Parquet has no CF-equivalent convention for per-variable/global scientific
 metadata, so `Channel.metadata`/`history` are preserved via per-field
@@ -15,6 +15,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from ctd_processing.config import ProcessSettings, resolve_output_dtype
 from ctd_processing.logging_utils import log_verbose
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
@@ -24,7 +25,9 @@ logger = logging.getLogger(__name__)
 __all__ = ["read_parquet", "write_parquet"]
 
 
-def write_parquet(dataset: Dataset, path: Path) -> Path:
+def write_parquet(
+    dataset: Dataset, path: Path, process_settings: ProcessSettings
+) -> Path:
     """Write `dataset` to `path` as a zstd-compressed Parquet file.
 
     `dataset.time` plus every channel in `dataset.channels` each become
@@ -34,7 +37,11 @@ def write_parquet(dataset: Dataset, path: Path) -> Path:
     ``default=str`` for the one non-JSON-safe value this package
     produces -- `datetime`-like deployment timestamps -- an accepted,
     documented lossy conversion: the text is recoverable, the original
-    type is not). Every column is zstd-compressed; float columns
+    type is not). Every floating-point column is cast to its resolved
+    output dtype (see `ctd_processing.config.resolve_output_dtype`)
+    before being written. Every column is compressed per
+    `process_settings.parquet_compression` (see
+    `ctd_processing.config.ParquetCompressionSettings`); float columns
     additionally use byte-stream-split encoding, which transposes each
     value's bytes across the column before compression -- more
     compressible for floating-point data than a plain byte-level
@@ -47,6 +54,9 @@ def write_parquet(dataset: Dataset, path: Path) -> Path:
     path : pathlib.Path
         File to write to. Its parent directory is created if it does not
         already exist.
+    process_settings : ProcessSettings
+        Supplies `output_dtype`/`channels` for
+        `ctd_processing.config.resolve_output_dtype`.
 
     Returns
     -------
@@ -60,15 +70,18 @@ def write_parquet(dataset: Dataset, path: Path) -> Path:
     float_columns = []
     channels_to_write = {"time": dataset.time, **dataset.channels}
     for name, channel in channels_to_write.items():
-        array = pa.array(channel.data)
+        data = channel.data
+        if np.issubdtype(data.dtype, np.floating):
+            dtype = resolve_output_dtype(process_settings, name)
+            data = data.astype(dtype, copy=False)
+            float_columns.append(name)
+        array = pa.array(data)
         arrays.append(array)
         field_metadata = {
             b"metadata": json.dumps(channel.metadata).encode(),
             b"history": json.dumps(channel.history).encode(),
         }
         fields.append(pa.field(name, array.type, metadata=field_metadata))
-        if np.issubdtype(channel.data.dtype, np.floating):
-            float_columns.append(name)
 
     schema_metadata = {
         b"ctd_processing.dataset_metadata": json.dumps(
@@ -80,10 +93,14 @@ def write_parquet(dataset: Dataset, path: Path) -> Path:
         arrays, schema=pa.schema(fields, metadata=schema_metadata)
     )
 
+    compression_settings = process_settings.parquet_compression
     pq.write_table(
         table,
         path,
-        compression="zstd",
+        compression="zstd" if compression_settings.enabled else "none",
+        compression_level=(
+            compression_settings.level if compression_settings.enabled else None
+        ),
         use_dictionary=False,
         column_encoding={name: "BYTE_STREAM_SPLIT" for name in float_columns},
     )

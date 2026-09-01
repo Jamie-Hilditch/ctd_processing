@@ -1,4 +1,4 @@
-"""Despiking, configured via `process.despike`/`process.despike_channels`.
+"""Despiking, configured via `process.despiking` and `process.channels`.
 
 See `ctd_processing.config.DespikeSettings` and
 `ctd_processing.config.resolve_despike_settings`. This mirrors
@@ -153,7 +153,9 @@ def despike_channel(channel: Channel, settings: DespikeSettings) -> Channel:
     Channel
         `channel` itself (not a copy), with a new entry appended to
         `channel.history` recording how many points were replaced, if
-        any were.
+        any were. The replaced count is logged at `VERBOSE` regardless
+        -- including ``0`` -- so a run that despiked nothing is still
+        visible in the log, not just a silent no-op.
 
     Raises
     ------
@@ -168,8 +170,8 @@ def despike_channel(channel: Channel, settings: DespikeSettings) -> Channel:
 
     despiked, count = despike_array(channel.data, settings)
     channel.data[:] = despiked
+    description = f"despiked {count} point(s)"
     if count:
-        description = f"despiked {count} point(s)"
         channel.record(description)
-        log_verbose(logger, description)
+    log_verbose(logger, description)
     return channel

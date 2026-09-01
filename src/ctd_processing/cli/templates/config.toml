@@ -17,8 +17,8 @@
 # or deployment. Where more than one applies, [deployments.*] wins over
 # [instruments.*], which wins over [process].
 #
-# `process` and `concatenate` are still stubs pending the real
-# pyrsktools/gsw-based implementation.
+# `process` is still a stub pending the real pyrsktools/gsw-based
+# implementation.
 
 [project]
 
@@ -42,8 +42,19 @@
 
 # binned_directory (required, no default): directory for pressure or
 # depth-binned profile files produced from profiles_directory. Resolved
-# the same way as rsk_directory.
+# the same way as rsk_directory. `concatenate --target NAME` resolves
+# NAME to NAME.<ext> in this directory (<ext> matching bin.output_format);
+# with no --target, every top-level file with that extension is
+# concatenated.
 # binned_directory = "binned"
+
+# concatenated_file (optional, default: unset): file `concatenate`
+# writes its single, deduplicated, time-ordered CF-compliant netCDF
+# output to. If relative, resolved the same way as rsk_directory. Unlike
+# every other path here, there is no valid "do nothing" behavior for
+# concatenate with this unset -- it must be set before running
+# concatenate.
+# concatenated_file = "concatenated.nc"
 
 # log_file (optional, default: unset): file to write log records below
 # ERROR level to. If relative, resolved the same way as rsk_directory.
@@ -54,16 +65,31 @@
 # at ERROR level and above to. Resolved the same way as log_file.
 # error_log_file = "ctd_processing.error.log"
 
+# read_channels (optional, default: []): restrict which channels are
+# extracted from a deployment's raw .rsk data to exactly these RBR
+# channel names -- the names the data is actually saved under on the
+# instrument (e.g. "temperature", "conductivity"), NOT the short
+# post-processing keys used in [process.raw_channels.<name>] below (e.g.
+# RBR's "conductivity" becomes the key "electrical_conductivity" there).
+# Applied while reading the .rsk file, before any other processing step,
+# so an excluded channel is never read into memory at all. If a
+# requested channel is not present in the deployment (unrecognized, or
+# reported by the instrument but not logged in this schedule), that is
+# an error, not a silent skip. Left unset (the default empty list),
+# every channel with data present is extracted.
+# [process]
+# read_channels = ["temperature", "conductivity", "sea_pressure"]
+
 # [process.raw_channels.<name>] sections are optional and configure
 # per-channel processing of the *raw* channels built from a deployment's
 # .rsk data. <name> is the short identifier a channel is stored under in
-# the built dataset -- e.g. "sea_water_temperature" -- not the raw
+# the built dataset -- e.g. "temperature" -- not the raw
 # pyrsktools field name and not the full CF standard_name. A channel with
 # no section here just uses the defaults below. Section names depend on
 # which channels your instrument reports; the example below is
 # illustrative, not required.
 #
-# [process.raw_channels.sea_water_temperature]
+# [process.raw_channels.temperature]
 #
 # remove_holds (default: true): remove "held" (repeated-value) stretches
 # from this channel's data before further processing.
@@ -102,14 +128,59 @@
 
 # profile_format (default: "parquet"): file format for extracted profile
 # files written to profiles_directory. "parquet" (default) is compressed
-# with zstd and byte-stream-split encoding for float columns -- the
-# better fit for this fast, size-sensitive intermediate stage. "netcdf"
-# writes CF-compliant files (units/long_name/standard_name as variable
-# attributes, project/deployment metadata and processing history as
-# global attributes) via xarray + h5netcdf -- better for long-term
+# per [process.parquet_compression] below, plus byte-stream-split
+# encoding for float columns -- the better fit for this fast,
+# size-sensitive intermediate stage. "netcdf" writes CF-compliant files
+# (units/long_name/standard_name as variable attributes,
+# project/deployment metadata and processing history as global
+# attributes) via xarray + h5netcdf, compressed per
+# [process.netcdf_compression] below -- better for long-term
 # self-description and interop with CF-aware tools (ERDDAP, OceanSITES,
-# etc.), at the cost of a larger, less-compressed file.
+# etc.).
 # profile_format = "parquet"
+
+# output_dtype (default: "float32"): project-wide default numpy
+# floating-point dtype every channel is cast to when written, unless
+# overridden by that channel's own output_dtype in
+# [process.channels.<name>] below. Must be a floating dtype.
+# output_dtype = "float32"
+
+# [process.netcdf_compression] configures zlib compression for
+# floating-point variables when profile_format = "netcdf". Ignored when
+# profile_format = "parquet". Shared with [bin.netcdf_compression] below
+# (same settings, same effect) since both write netCDF via xarray +
+# h5netcdf. The time coordinate is always left uncompressed regardless
+# of these settings.
+#
+# enabled (default: true): compress floating-point variables at all.
+# false writes fully uncompressed netCDF files.
+#
+# complevel (default: 4): zlib compression level, 0 (fastest, no
+# compression) to 9 (slowest, most compression).
+#
+# shuffle (default: true): apply HDF5's shuffle filter before
+# compressing -- typically improves compression for floats at
+# negligible cost.
+# [process.netcdf_compression]
+# enabled = true
+# complevel = 4
+# shuffle = true
+
+# [process.parquet_compression] configures zstd compression when
+# profile_format = "parquet". Ignored when profile_format = "netcdf".
+# Byte-stream-split encoding for float columns is unaffected by
+# `enabled` -- it is a column-encoding transform, independent of the
+# zstd codec choice.
+#
+# enabled (default: true): zstd-compress at all. false writes with
+# compression="none".
+#
+# level (optional, default: unset): zstd compression level, 1 (fastest,
+# least compression) to 22 (slowest, most compression). Unset (the
+# default) means pyarrow's/zstd's own default level.
+# [process.parquet_compression]
+# enabled = true
+# level = 3
 
 # [process.profiles] configures identifying individual profiles (casts)
 # from the sea_pressure channel via the `profinder` package. All fields
@@ -172,8 +243,21 @@
 # required when apply_speed_threshold is true.
 # min_speed = 0.2
 
-# direction (default: "down"): which cast direction(s) to identify
-# profiles for. One of "up", "down", "both".
+# speed_threshold_direction (default: "both"): only relevant when
+# apply_speed_threshold is true. The downcast and upcast of every
+# turnaround are always both identified regardless of this setting; it
+# only controls which of them gets its boundary refined by the
+# min_speed check. One of "up", "down", "both". Independent of
+# direction below, which controls which cast(s) are written out as
+# separate profiles.
+# speed_threshold_direction = "both"
+
+# direction (default: "down"): which cast direction(s) to write out as
+# separate profiles. "down"/"up" extracts only the downcast/upcast of
+# each identified turnaround; "both" extracts the downcast and upcast
+# as two separate profiles. The dwell between a turnaround's downcast
+# and upcast is never included in an extracted profile. One of "up",
+# "down", "both".
 # direction = "down"
 
 # missing (default: "drop"): how to handle non-finite values in the
@@ -184,8 +268,8 @@
 # missing = "drop"
 
 # [process.ct_lag] configures the conductivity/temperature (CT) lag
-# correction: shifting the sea_water_electrical_conductivity channel by a
-# small number of samples relative to sea_water_temperature to reduce
+# correction: shifting the electrical_conductivity channel by a
+# small number of samples relative to temperature to reduce
 # salinity spiking caused by the two sensors' slightly different response
 # times. A single shift is calculated for the whole deployment (not one
 # per profile) by grid-searching candidate lags and picking the one that
@@ -197,7 +281,7 @@
 
 # enabled (default: false): whether to calculate and apply this
 # correction. To apply a known, fixed shift instead of calculating one,
-# set shift under [process.raw_channels.sea_water_electrical_conductivity]
+# set shift under [process.raw_channels.electrical_conductivity]
 # directly rather than enabling this.
 # enabled = false
 
@@ -255,7 +339,7 @@
 # (computed via gsw) are attached to each profile, right after a position
 # has been attached to it (see [process.geolocation] above) and before it
 # is written out. Every quantity is derived from the profile's
-# sea_water_electrical_conductivity, sea_water_temperature, and
+# electrical_conductivity, temperature, and
 # sea_pressure channels, plus its latitude/longitude. Disabling a field
 # only omits that channel from the output -- the underlying practical/
 # absolute salinity and conservative temperature chain is always computed
@@ -292,7 +376,7 @@
 # potential_temperature = false
 
 # sound_speed (default: false): speed of sound in sea water, added
-# under "speed_of_sound_in_sea_water".
+# under "speed_of_sound".
 # sound_speed = false
 
 # density (default: false): in-situ density, added under
@@ -327,16 +411,16 @@
 # is raised rather than silently skipping it.
 # oxygen_concentration = false
 
-# [process.despike] sets the project-wide default despike settings --
+# [process.despiking] sets the project-wide default despike settings --
 # how many standard deviations of the residual against a rolling median
 # count as a spike, how wide that rolling median's window is, and how
 # many detect-and-replace passes to run (stopping early the first pass
 # that finds nothing new). Spikes are always replaced with NaN. These
-# defaults only take effect for a channel that's actually listed in
-# [process.despike_channels] below -- setting values here alone despikes
-# nothing.
+# are only defaults: whether a given channel is despiked at all is
+# configured per channel, in [process.channels.<name>] below -- setting
+# values here alone despikes nothing.
 #
-# [process.despike]
+# [process.despiking]
 
 # threshold (default: 2.0): number of standard deviations a point's
 # residual against the rolling median must exceed to be flagged.
@@ -350,23 +434,45 @@
 # passes to run.
 # max_iterations = 5
 
-# [process.despike_channels.<name>] sections say which channels to
-# despike -- a channel is despiked if and only if it has a section here,
-# even an empty one (meaning "use [process.despike]'s defaults for this
-# channel"). <name> is the same channel-key namespace used elsewhere:
-# raw channels (e.g. "sea_water_temperature", matching
-# [process.raw_channels.<name>]) and derived-variable channels (e.g.
+# [process.channels.<name>] sections are optional and configure
+# per-channel output settings: despiking and output precision. <name>
+# uses the same key namespace as [process.raw_channels.<name>] above:
+# raw channels (e.g. "temperature") and derived-variable channels (e.g.
 # "practical_salinity", matching [process.derived_variables]'s output
-# keys) share one namespace. Despiking runs as soon as a channel exists
-# -- for raw channels, before any derived variable is computed from
-# them; for derived channels, immediately after that quantity is
-# computed and before it feeds the next one (e.g. practical_salinity is
-# despiked before it's used to compute absolute_salinity). Only the
-# fields given here override [process.despike]'s defaults; the example
-# below overrides just threshold.
+# keys) share one namespace. A channel with no section here is not
+# despiked and is written in output_dtype's project-wide default below.
 #
-# [process.despike_channels.practical_salinity]
+# despike (default: false): whether to despike this channel, using
+# [process.despiking]'s project-wide defaults, as overridden by this
+# channel's own despiking table below (if any). Despiking runs as soon
+# as a channel exists -- for raw channels, before any derived variable
+# is computed from them; for derived channels, immediately after that
+# quantity is computed and before it feeds the next one (e.g.
+# practical_salinity is despiked before it's used to compute
+# absolute_salinity).
+#
+# [process.channels.temperature]
+# despike = true
+#
+# despiking (optional): overrides threshold/window_length/max_iterations
+# from [process.despiking] for just this channel (any field left out
+# inherits the project-wide default). Only takes effect when despike is
+# true above -- setting this alone, without despike = true, does
+# nothing.
+#
+# [process.channels.practical_salinity]
+# despike = true
+#
+# [process.channels.practical_salinity.despiking]
 # threshold = 3.0
+
+# output_dtype (optional, default: unset, meaning use [process]'s
+# project-wide output_dtype below): the numpy floating-point dtype
+# (e.g. "float32", "float64") this channel's data is cast to when
+# written. Must be a floating dtype.
+#
+# [process.channels.z]
+# output_dtype = "float64"
 
 # [bin] configures the `bin` command, which reads back every profile file
 # for one deployment, bins each profile's channels onto a common grid
@@ -400,9 +506,44 @@
 
 # output_format (default: "netcdf"): file format for the combined,
 # binned dataset. "netcdf" writes a CF-compliant file via xarray +
-# h5netcdf, matching process.profile_format's "netcdf" option. "zarr"
-# writes a Zarr store instead.
+# h5netcdf, matching process.profile_format's "netcdf" option and
+# compressed per [bin.netcdf_compression] below. "zarr" writes a Zarr
+# store instead, compressed per [bin.zarr_compression] below.
 # output_format = "netcdf"
+
+# [bin.netcdf_compression] configures zlib compression for
+# floating-point variables when output_format = "netcdf". Ignored when
+# output_format = "zarr". Same settings/effect as
+# [process.netcdf_compression] above. Every coordinate is always left
+# uncompressed.
+# [bin.netcdf_compression]
+# enabled = true
+# complevel = 4
+# shuffle = true
+
+# [bin.zarr_compression] configures Blosc compression for
+# floating-point variables when output_format = "zarr". Ignored when
+# output_format = "netcdf". Every coordinate is always left
+# uncompressed.
+#
+# enabled (default: true): compress floating-point variables at all.
+# false writes with no compressor at all (zarr's raw bytes codec only).
+#
+# cname (default: "zstd"): the Blosc-internal codec. One of "blosclz",
+# "lz4", "lz4hc", "snappy", "zlib", "zstd".
+#
+# clevel (default: 5): Blosc compression level, 0 (fastest, no
+# compression) to 9 (slowest, most compression).
+#
+# shuffle (optional, default: unset): byte-shuffle filter applied
+# before compressing. One of "noshuffle", "shuffle", "bitshuffle".
+# Unset means BloscCodec picks automatically based on each variable's
+# dtype.
+# [bin.zarr_compression]
+# enabled = true
+# cname = "zstd"
+# clevel = 5
+# shuffle = "shuffle"
 
 # [instruments.<serial_number>] sections are optional and override
 # [process] settings for one specific instrument, identified by its
@@ -418,7 +559,7 @@
 # [instruments.208532.process]
 # atmospheric_pressure = 10.1
 #
-# [instruments.208532.process.raw_channels.sea_water_temperature]
+# [instruments.208532.process.raw_channels.temperature]
 # shift = 2
 
 # [deployments.<stem>] sections are optional and override [process] (and

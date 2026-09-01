@@ -10,7 +10,15 @@ import tomli_w
 import typer
 from pydantic import ValidationError
 
-from ctd_processing.cli._options import SetOption
+from ctd_processing.cli._logging import configure_cli_logging
+from ctd_processing.cli._options import (
+    DebugOption,
+    LogLevel,
+    LogLevelOption,
+    NoStdoutLogOption,
+    SetOption,
+    VerboseOption,
+)
 from ctd_processing.config import Settings, merge_overrides
 
 _TEMPLATE_PACKAGE = "ctd_processing.cli.templates"
@@ -118,6 +126,10 @@ def init_command(
             "directory if present.",
         ),
     ] = False,
+    log_level: LogLevelOption = LogLevel.INFO,
+    verbose: VerboseOption = False,
+    debug: DebugOption = False,
+    no_stdout_log: NoStdoutLogOption = False,
 ) -> None:
     """Write a starter ``config.toml`` for a new ctd_processing project.
 
@@ -185,6 +197,18 @@ def init_command(
         If ``False`` (default) and ``config.toml`` already exists in
         `working_dir`, the command aborts without touching the existing
         file. If ``True``, the existing file is overwritten.
+    log_level : LogLevel, optional
+        Minimum log level to emit. Overridden by `verbose`/`debug` when
+        either is given.
+    verbose : bool, optional
+        If given, emit VERBOSE-level (and above) log records regardless
+        of `log_level`. Overridden by `debug`.
+    debug : bool, optional
+        If given, emit DEBUG-level (and above) log records regardless of
+        `log_level`/`verbose` -- DEBUG is more detailed than VERBOSE, so
+        this includes every VERBOSE record too.
+    no_stdout_log : bool, optional
+        If given, log records are not written to stdout.
 
     Raises
     ------
@@ -194,6 +218,7 @@ def init_command(
         contains a malformed or invalid override, or if the merged
         configuration is otherwise invalid.
     """
+    configure_cli_logging(log_level, verbose, debug, no_stdout_log)
     resolved_working_dir = (
         working_dir if working_dir is not None else Path.cwd()
     )

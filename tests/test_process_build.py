@@ -56,15 +56,16 @@ def test_build_dataset_keys_channels_by_long_name_slug(
 ) -> None:
     """Channels are keyed by a slug of long_name, not by standard_name.
 
-    Temperature's slug happens to coincide with its standard_name, but
-    pressure's doesn't ("absolute_pressure" vs. "sea_water_pressure") --
-    checking both demonstrates the key really comes from long_name.
+    Neither temperature's key ("temperature" vs. standard_name
+    "sea_water_temperature") nor pressure's ("absolute_pressure" vs.
+    "sea_water_pressure") coincides with its standard_name -- checking
+    both demonstrates the key really comes from long_name.
     """
     rsk = read_rsk(example_rsk_path)
 
     dataset = build_dataset(rsk, example_rsk_path, ProjectSettings())
 
-    temperature = dataset.channels["sea_water_temperature"]
+    temperature = dataset.channels["temperature"]
     assert temperature.metadata["standard_name"] == "sea_water_temperature"
     assert temperature.metadata["long_name"] == "Sea water temperature"
     assert temperature.metadata["source_channel_name"] == "temperature"
@@ -189,4 +190,69 @@ def test_build_dataset_logs_at_verbose_level(
         if record.levelno == VERBOSE
     }
     assert f"read from {example_rsk_path}" in verbose_messages
-    assert "added channel 'sea_water_temperature'" in verbose_messages
+    assert "added channel 'temperature'" in verbose_messages
+
+
+@pytest.mark.requires_example_data
+def test_build_dataset_read_channels_restricts_extraction(
+    example_rsk_path: Path,
+) -> None:
+    """read_channels filters by RBR longName, not the derived channel key.
+
+    Requesting "conductivity" (the RBR longName) keeps just that
+    channel, stored under its derived key "electrical_conductivity" --
+    proving filtering happens against longName, not the key itself.
+    """
+    rsk = read_rsk(example_rsk_path)
+
+    dataset = build_dataset(
+        rsk, example_rsk_path, ProjectSettings(), ["conductivity"]
+    )
+
+    assert set(dataset.channels) == {"electrical_conductivity"}
+
+
+@pytest.mark.requires_example_data
+def test_build_dataset_read_channels_rejects_derived_key(
+    example_rsk_path: Path,
+) -> None:
+    """The derived key is not itself a valid read_channels entry."""
+    rsk = read_rsk(example_rsk_path)
+
+    with pytest.raises(ValueError, match="electrical_conductivity"):
+        build_dataset(
+            rsk,
+            example_rsk_path,
+            ProjectSettings(),
+            ["electrical_conductivity"],
+        )
+
+
+@pytest.mark.requires_example_data
+def test_build_dataset_read_channels_none_or_empty_extracts_everything(
+    example_rsk_path: Path,
+) -> None:
+    """read_channels=None and read_channels=[] both mean "no filter"."""
+    rsk = read_rsk(example_rsk_path)
+
+    unfiltered = build_dataset(rsk, example_rsk_path, ProjectSettings())
+    explicit_empty = build_dataset(rsk, example_rsk_path, ProjectSettings(), [])
+
+    assert set(unfiltered.channels) == set(explicit_empty.channels)
+    assert len(unfiltered.channels) > 1
+
+
+@pytest.mark.requires_example_data
+def test_build_dataset_read_channels_unknown_key_raises(
+    example_rsk_path: Path,
+) -> None:
+    """A read_channels entry never matched by any real channel is an error."""
+    rsk = read_rsk(example_rsk_path)
+
+    with pytest.raises(ValueError, match="not_a_real_channel"):
+        build_dataset(
+            rsk,
+            example_rsk_path,
+            ProjectSettings(),
+            ["temperature", "not_a_real_channel"],
+        )

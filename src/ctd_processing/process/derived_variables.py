@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 __all__ = ["compute_derived_variables"]
 
 _REQUIRED_CHANNELS = (
-    "sea_water_electrical_conductivity",
-    "sea_water_temperature",
+    "electrical_conductivity",
+    "temperature",
     "sea_pressure",
 )
 
@@ -92,16 +92,18 @@ def _maybe_despike(
     -------
     numpy.typing.NDArray
         `data` unchanged if `key` has no entry in `despike`; otherwise the
-        despiked data.
+        despiked data. The replaced count is logged at `VERBOSE`
+        regardless -- including ``0`` -- so a run that despiked nothing
+        is still visible in the log, not just a silent no-op.
     """
     settings = despike.get(key)
     if settings is None:
         return data
     despiked, count = despike_array(data, settings)
+    description = f"despiked {key}: {count} point(s)"
     if count:
-        description = f"despiked {key}: {count} point(s)"
         dataset.record(description)
-        log_verbose(logger, description)
+    log_verbose(logger, description)
     return despiked
 
 
@@ -135,7 +137,7 @@ def compute_derived_variables(
     ----------
     dataset : Dataset
         One profile's already-geolocated `Dataset` (must have
-        `sea_water_electrical_conductivity`, `sea_water_temperature`, and
+        `electrical_conductivity`, `temperature`, and
         `sea_pressure` channels, and `latitude`/`longitude` in
         `dataset.metadata` -- see
         `ctd_processing.process.geolocation.attach_geolocation`).
@@ -179,8 +181,8 @@ def compute_derived_variables(
             "latitude/longitude (attach geolocation first)."
         )
 
-    conductivity = dataset.channels["sea_water_electrical_conductivity"].data
-    temperature = dataset.channels["sea_water_temperature"].data
+    conductivity = dataset.channels["electrical_conductivity"].data
+    temperature = dataset.channels["temperature"].data
     sea_pressure = dataset.channels["sea_pressure"].data
 
     practical_salinity = gsw.SP_from_C(conductivity, temperature, sea_pressure)
@@ -310,7 +312,7 @@ def compute_derived_variables(
     if settings.sound_speed:
         sound_speed_data = _maybe_despike(
             dataset,
-            "speed_of_sound_in_sea_water",
+            "speed_of_sound",
             gsw.sound_speed(
                 absolute_salinity, conservative_temperature, sea_pressure
             ),
@@ -318,7 +320,7 @@ def compute_derived_variables(
         )
         _add_channel(
             dataset,
-            "speed_of_sound_in_sea_water",
+            "speed_of_sound",
             Channel(
                 data=sound_speed_data,
                 metadata={
@@ -328,7 +330,7 @@ def compute_derived_variables(
                 },
             ),
         )
-        added.append("speed_of_sound_in_sea_water")
+        added.append("speed_of_sound")
 
     if settings.density:
         density_data = _maybe_despike(

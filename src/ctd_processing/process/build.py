@@ -43,7 +43,10 @@ def _sampling_period_seconds(rsk: pyrsktools.RSK) -> float | None:
 
 
 def build_dataset(
-    rsk: pyrsktools.RSK, file: Path, project: ProjectSettings
+    rsk: pyrsktools.RSK,
+    file: Path,
+    project: ProjectSettings,
+    read_channels: list[str] | None = None,
 ) -> Dataset:
     """Build a `Dataset` from an opened, read `pyrsktools.RSK`.
 
@@ -65,12 +68,21 @@ def build_dataset(
         provenance.
     project : ProjectSettings
         Project metadata to attach to the returned Dataset.
+    read_channels : list[str] or None, optional
+        Restrict extraction to exactly these RBR channel names -- the
+        raw `pyrsktools.datatypes.Channel.longName` values the data is
+        actually saved under on the instrument (e.g. ``"temperature"``,
+        ``"conductivity"``), not `channel_key_for_longname`'s derived
+        key (see `ctd_processing.config.ProcessSettings.read_channels`).
+        Optional; if ``None`` or empty (the default), every channel with
+        data present in this schedule is extracted, as before.
 
     Returns
     -------
     Dataset
         A Dataset whose `time` channel is `rsk.data["timestamp"]`, with
-        every measured/derived channel pyrsktools reports added under its
+        every measured/derived channel pyrsktools reports (restricted to
+        `read_channels`, if given) added under its
         `channel_key_for_longname` key (see above), and `metadata`
         populated with deployment/instrument provenance.
 
@@ -78,7 +90,9 @@ def build_dataset(
     ------
     ValueError
         If `rsk.instrument`, `rsk.epoch`, or `rsk.deployment` is ``None``
-        (i.e. `rsk` was not read via `read_rsk` first).
+        (i.e. `rsk` was not read via `read_rsk` first), or if
+        `read_channels` names a channel not found among `rsk.channels`
+        with data present in this schedule.
     """
     if rsk.instrument is None or rsk.epoch is None or rsk.deployment is None:
         raise ValueError(
@@ -104,25 +118,32 @@ def build_dataset(
     dataset.record(f"read from {file}")
     log_verbose(logger, "read from %s", file)
 
+    requested = set(read_channels) if read_channels else None
+    found: set[str] = set()
+
     data_field_names = rsk.data.dtype.names or ()
     for rsk_channel in rsk.channels:
         if rsk_channel.longName not in data_field_names:
-            logger.warning(
+            logger.debug(
                 "Skipping channel %r: not present in this schedule's data.",
                 rsk_channel.longName,
             )
             continue
 
+        if requested is not None and rsk_channel.longName not in requested:
+            continue
+        found.add(rsk_channel.longName)
+
         cf = cf_metadata_for_longname(rsk_channel.longName)
-        key = channel_key_for_longname(rsk_channel.longName)
-        if key in dataset.channels:
+        storage_key = channel_key_for_longname(rsk_channel.longName)
+        if storage_key in dataset.channels:
             logger.warning(
                 "Channel name %r already used in this dataset; adding "
                 "channel %r under its own name instead.",
-                key,
+                storage_key,
                 rsk_channel.longName,
             )
-            key = rsk_channel.longName
+            storage_key = rsk_channel.longName
         if cf.standard_name is None:
             logger.info(
                 "No CF standard_name for channel %r.", rsk_channel.longName
@@ -139,7 +160,15 @@ def build_dataset(
         channel = Channel(
             data=rsk.data[rsk_channel.longName], metadata=metadata
         )
-        dataset.add_channel(key, channel)
-        log_verbose(logger, "added channel %r", key)
+        dataset.add_channel(storage_key, channel)
+        log_verbose(logger, "added channel %r", storage_key)
+
+    if requested is not None:
+        missing = requested - found
+        if missing:
+            raise ValueError(
+                f"read_channels requested channel(s) not found in {file}: "
+                f"{sorted(missing)!r}."
+            )
 
     return dataset
