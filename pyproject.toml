@@ -26,9 +26,11 @@ ctd-processing = "ctd_processing.cli:app"
 
 [dependency-groups]
 dev = [
+    "mkdocstrings-python>=2.0.8",
     "pytest>=9.1.1",
     "ruff>=0.16.4",
     "ty>=0.0.74",
+    "zensical>=0.0.57",
 ]
 
 [build-system]

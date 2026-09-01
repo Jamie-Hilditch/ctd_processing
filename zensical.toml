@@ -1,0 +1,97 @@
+[project]
+site_name = "ctd-processing"
+site_description = "Process RBR CTD (.rsk) data files into CF-compliant, TEOS-10 derived oceanographic datasets."
+site_url = "https://jamie-hilditch.github.io/ctd_processing/"
+
+repo_url = "https://github.com/Jamie-Hilditch/ctd_processing"
+repo_name = "Jamie-Hilditch/ctd_processing"
+edit_uri = "edit/main/docs/"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Installation" = "installation.md" },
+  { "Quickstart" = "quickstart.md" },
+  { "Configuration" = "configuration.md" },
+  { "CLI reference" = [
+    "cli/index.md",
+    "cli/init.md",
+    "cli/process.md",
+    "cli/bin.md",
+    "cli/concatenate.md",
+  ] },
+  { "Concepts" = [
+    "concepts/pipeline.md",
+  ] },
+  { "API reference" = [
+    "api/config.md",
+    "api/process.md",
+    "api/bin.md",
+    "api/misc.md",
+  ] },
+  { "Contributing" = "contributing.md" },
+]
+
+[project.theme]
+language = "en"
+features = [
+  "announce.dismiss",
+  "content.code.annotate",
+  "content.code.copy",
+  "content.code.select",
+  "content.footnote.tooltips",
+  "content.tabs.link",
+  "content.tooltips",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+toc.permalink = true
+pymdownx.betterem = {}
+pymdownx.details = {}
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.superfences = {}
+pymdownx.tabbed.alternate_style = true
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+options.docstring_style = "numpy"
+options.show_source = true
+options.show_root_heading = true
+options.show_root_full_path = false
+options.merge_init_into_class = true
+options.separate_signature = true
+options.show_signature_annotations = true

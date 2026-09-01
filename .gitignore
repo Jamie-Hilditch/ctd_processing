@@ -29,3 +29,6 @@ Thumbs.db
 
 # Example CTD data files (dev/test only, not tracked in git)
 tests/example_data/
+
+# Zensical build output
+site/
