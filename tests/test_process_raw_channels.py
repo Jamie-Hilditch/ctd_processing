@@ -396,21 +396,27 @@ def test_process_raw_channel_applies_despike_last() -> None:
     remove_holds+shift(1) turns [1, 1, 2, 3, 50, 3, 3] into
     [nan, 1, nan, 2, 3, 50, 3] -- the spike ends up at (post-shift) index
     5. Despiking must find it there, proving it ran on the already
-    remove_holds+shift-corrected array, not the raw input.
+    remove_holds+shift-corrected array, not the raw input. The spike
+    sitting one sample from the array's end also drags the rolling
+    median at the last sample (index 6) partway toward it, so that
+    sample's residual crosses threshold too -- MAD isn't inflated by the
+    spike the way a plain standard deviation would be, so it doesn't get
+    masked the way it would have under the old std-based scale.
     """
     channel = Channel(data=np.array([1.0, 1.0, 2.0, 3.0, 50.0, 3.0, 3.0]))
 
     result = process_raw_channel(
         channel,
         RawChannelSettings(remove_holds=True, shift=1),
-        DespikeSettings(threshold=2.0, window_length=3),
+        DespikeSettings(),
     )
 
     assert np.isnan(result.data[5])
+    assert np.isnan(result.data[6])
     assert result.history == [
         "removed 2 zero-order hold value(s)",
         "shifted by 1 sample(s)",
-        "despiked 1 point(s)",
+        "despiked 2 point(s)",
     ]
 
 
@@ -487,7 +493,7 @@ def test_process_raw_channels_despikes_only_configured_channels() -> None:
     dataset = Dataset(time=Channel(data=np.array([0.0, 1.0, 2.0, 3.0, 4.0])))
     dataset.add_channel(
         "sea_water_temperature",
-        Channel(data=np.array([1.0, 1.0, 1.0, 50.0, 1.0])),
+        Channel(data=np.array([1.0, 1.02, 0.98, 50.0, 1.01])),
     )
     dataset.add_channel(
         "sea_water_electrical_conductivity",
@@ -505,11 +511,7 @@ def test_process_raw_channels_despikes_only_configured_channels() -> None:
                 ),
             },
         ),
-        despike={
-            "sea_water_temperature": DespikeSettings(
-                threshold=2.0, window_length=3
-            )
-        },
+        despike={"sea_water_temperature": DespikeSettings()},
     )
 
     assert np.isnan(result.channels["sea_water_temperature"].data[3])

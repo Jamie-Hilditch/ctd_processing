@@ -1,20 +1,28 @@
 """Despiking, configured via `process.despiking` and `process.channels`.
 
 See `ctd_processing.config.DespikeSettings` and
-`ctd_processing.config.resolve_despike_settings`. This mirrors
+`ctd_processing.config.resolve_despike_settings`. This is loosely based on
 `pyrsktools.RSK.despike`'s algorithm -- smooth with a rolling median
 filter to get a "reference" series, form the residual against it, and
-flag points whose residual exceeds ``threshold`` standard deviations --
-with two deliberate differences:
+flag points whose residual exceeds ``threshold`` times a robust
+(median-absolute-deviation-based) estimate of the residual's spread --
+with deliberate differences:
 
+- The spread estimate is MAD-based rather than the residual's standard
+  deviation. Std is inflated by the very spikes it's trying to measure;
+  MAD isn't (up to its ~50% breakdown point), so a single pass's
+  threshold isn't dragged around by the spikes it's meant to catch.
+  `pyrsktools.RSK.despike` uses a plain standard deviation.
 - Flagged points are always replaced with NaN. `pyrsktools.RSK.despike`
   also supports replacing with the reference value or a linear
   interpolation; neither is offered here.
-- The whole detect-and-replace step runs iteratively, up to
-  `DespikeSettings.max_iterations` times, stopping early the first pass
-  that flags nothing new -- removing large spikes can reveal or unmask
-  smaller ones the previous pass's median/std missed. `pyrsktools.RSK.
-  despike` only ever runs one pass.
+- The whole detect-and-replace step can run for up to
+  `DespikeSettings.iterations` passes, stopping early the first pass
+  that flags nothing new. Because the MAD-based spread isn't inflated by
+  spikes, a single pass usually already catches everything a std-based
+  approach would need several iterations to "unmask"; `iterations`
+  defaults to ``1`` and mainly exists as an escape valve for unusual
+  data. `pyrsktools.RSK.despike` only ever runs one pass.
 
 Like `ct_lag.py`'s `_moving_nanmean`, the rolling median filter here uses
 an edge-clipped window (shrinks near the array boundary) instead of
@@ -91,15 +99,17 @@ def _rolling_nanmedian(
 def despike_array(
     data: npt.NDArray[Any], settings: DespikeSettings
 ) -> tuple[npt.NDArray[Any], int]:
-    """Replace spikes in `data` with NaN, up to `max_iterations` passes.
+    """Replace spikes in `data` with NaN, up to `iterations` passes.
 
     Each pass: smooths `data` with `_rolling_nanmedian` to get a
     reference series, forms the residual (`data - reference`), and flags
-    points whose residual magnitude exceeds
-    ``settings.threshold * np.nanstd(residual)`` (ignoring non-finite
-    residuals). Flagged points are set to NaN. Stops as soon as a pass
-    flags nothing new, or after `settings.max_iterations` passes,
-    whichever comes first.
+    points whose residual magnitude exceeds ``settings.threshold`` times
+    a MAD-based robust estimate of the residual's spread -- ``1.4826 *
+    median(|residual - median(residual)|)``, ignoring non-finite
+    residuals; the ``1.4826`` constant makes this a consistent estimator
+    of standard deviation under Gaussian noise. Flagged points are set to
+    NaN. Stops as soon as a pass flags nothing new, or after
+    `settings.iterations` passes, whichever comes first.
 
     Parameters
     ----------
@@ -117,16 +127,20 @@ def despike_array(
     """
     working = data.astype(np.float64, copy=True)
     total = 0
-    for _ in range(settings.max_iterations):
+    for _ in range(settings.iterations):
         reference = _rolling_nanmedian(working, settings.window_length)  # ty: ignore
         residual = working - reference
-        sd = np.nanstd(residual)
-        if not np.isfinite(sd) or sd == 0:
+        center = np.nanmedian(residual)
+        mad = np.nanmedian(np.abs(residual - center))
+        scale = 1.4826 * mad
+        if not np.isfinite(scale) or scale == 0:
             break
 
         finite = np.isfinite(residual)
         spike_mask = np.zeros(residual.shape, dtype=bool)
-        spike_mask[finite] = np.abs(residual[finite]) > settings.threshold * sd
+        spike_mask[finite] = (
+            np.abs(residual[finite]) > settings.threshold * scale
+        )
         indices = np.flatnonzero(spike_mask)
         if indices.size == 0:
             break

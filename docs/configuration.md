@@ -120,7 +120,7 @@ and `oxygen_concentration` are opt-in.
 ### Despiking
 
 `[process.despiking]` sets the project-wide rolling-median despike defaults
-(`threshold`, `window_length`, `max_iterations`) — see
+(`threshold`, `window_length`, `iterations`) — see
 [`DespikeSettings`](api/config.md). These are only defaults: a channel is
 only actually despiked if enabled per-channel below.
 

@@ -551,17 +551,16 @@ class DespikeChannelOverride(BaseModel):
         this channel. Not validated here -- an even value only fails
         once merged and resolved (see `resolve_despike_settings`).
         Optional; defaults to ``None``, meaning inherit.
-    max_iterations : int or None
-        Override of the project-wide `DespikeSettings.max_iterations`
-        for this channel. Optional; defaults to ``None``, meaning
-        inherit.
+    iterations : int or None
+        Override of the project-wide `DespikeSettings.iterations` for
+        this channel. Optional; defaults to ``None``, meaning inherit.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     threshold: float | None = None
     window_length: int | None = None
-    max_iterations: int | None = None
+    iterations: int | None = None
 
 
 class DespikeSettings(BaseModel):
@@ -571,10 +570,12 @@ class DespikeSettings(BaseModel):
     `ctd_processing.config.resolve_despike_settings`. A channel is
     smoothed with a rolling median filter of `window_length` to get a
     "reference" series; points whose residual against that reference
-    exceeds `threshold` standard deviations are replaced with NaN. This
-    repeats, up to `max_iterations` times, stopping early the first pass
-    that finds no new spikes -- removing large spikes can unmask smaller
-    ones the previous pass's median/std missed.
+    exceeds `threshold` times a MAD-based (median absolute deviation)
+    robust estimate of the residual's spread are replaced with NaN. This
+    can repeat, up to `iterations` times, stopping early the first pass
+    that finds no new spikes -- but because the MAD-based spread isn't
+    inflated by the spikes it's measuring (unlike a plain standard
+    deviation), a single pass is usually already enough.
 
     These are project-wide defaults only; whether a given channel is
     despiked at all, and any per-channel overrides of these values, are
@@ -584,25 +585,29 @@ class DespikeSettings(BaseModel):
     Attributes
     ----------
     threshold : float
-        Number of standard deviations (of the residual against the
+        Number of MAD-based spread units (of the residual against the
         rolling median) a point must exceed to be flagged as a spike.
-        Defaults to ``2.0``, matching `pyrsktools.RSK.despike`'s own
-        default.
+        Defaults to ``3.0``, the standard "3xMAD" convention for Hampel
+        identifiers. This is a deliberate divergence from
+        `pyrsktools.RSK.despike`, which uses a plain standard deviation
+        with a default of ``2.0``.
     window_length : int
         Width, in samples, of the rolling median filter. Must be odd.
         Defaults to ``3``, matching `pyrsktools.RSK.despike`'s own
         default.
-    max_iterations : int
+    iterations : int
         Maximum number of detect-and-replace passes to run. Defaults to
-        ``5`` -- genuinely iterative by default, since a pass that finds
-        nothing new stops early regardless.
+        ``1`` -- a pass that finds nothing new stops early regardless,
+        and because the MAD-based spread doesn't get inflated by the
+        spikes it's meant to catch, repeated passes are rarely needed;
+        this exists as an escape valve for unusual data.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    threshold: float = 2.0
+    threshold: float = 3.0
     window_length: int = 3
-    max_iterations: int = 5
+    iterations: int = 1
 
     @model_validator(mode="after")
     def _validate_window_length(self) -> "DespikeSettings":
@@ -639,7 +644,7 @@ class ChannelSettings(BaseModel):
     despiking : DespikeChannelOverride
         This channel's overrides of the project-wide
         `ProcessSettings.despiking` defaults' `threshold`/
-        `window_length`/`max_iterations` (a
+        `window_length`/`iterations` (a
         ``[process.channels.<name>.despiking]`` table). Only takes
         effect when `despike` is ``True`` -- a channel with `despike`
         left at ``False`` is not despiked regardless of what's set here.
@@ -1317,7 +1322,7 @@ def resolve_despike_settings(
     For each `process_settings.channels` entry whose `despike` is
     ``True``, deep-merges its `despiking`'s non-``None`` override fields
     onto `process_settings.despiking`'s own `threshold`/`window_length`/
-    `max_iterations` (the project-wide defaults) and validates the
+    `iterations` (the project-wide defaults) and validates the
     result -- the same override mechanism `resolve_process_settings`
     uses for instrument/deployment overrides, applied one level deeper.
     A channel with `despike` left at its default of ``False`` is not

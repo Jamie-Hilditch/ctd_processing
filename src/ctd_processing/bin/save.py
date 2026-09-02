@@ -28,16 +28,28 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["load_binned_dataset", "save_binned_dataset"]
 
+# Pinned rather than left to xarray's own guess: xarray otherwise picks a
+# reference/unit from the dataset's own time range (e.g. "hours since
+# <first timestamp>"), which can be too coarse to represent every
+# timestamp exactly and silently gets corrected -- with a UserWarning --
+# to a finer unit. Nanoseconds since the epoch match numpy.datetime64's
+# own default resolution, so no such correction is ever needed.
+_TIME_ENCODING: dict[str, object] = {
+    "units": "nanoseconds since 1970-01-01",
+    "dtype": "int64",
+}
+
 
 def _zarr_compression_encoding(
     dataset: xr.Dataset, settings: ZarrCompressionSettings
-) -> dict[str, dict[str, list[BloscCodec]]]:
+) -> dict[str, dict[str, object]]:
     """Build `xarray.Dataset.to_zarr`'s encoding for every float variable.
 
-    Every coordinate is left out of the returned mapping entirely, so
+    Coordinates are left out of the returned mapping entirely, so
     `xarray.Dataset.to_zarr` falls back to zarr's own default codec for
-    it -- matching `ctd_processing.process.save_netcdf.
-    netcdf_compression_encoding`'s treatment of ``time``.
+    them; the caller (`save_binned_dataset`) separately adds an explicit
+    ``time`` entry (see `_TIME_ENCODING`) on top of this function's
+    result.
 
     Parameters
     ----------
@@ -49,14 +61,14 @@ def _zarr_compression_encoding(
 
     Returns
     -------
-    dict[str, dict[str, list]]
+    dict[str, dict[str, object]]
         The `encoding` mapping for `xarray.Dataset.to_zarr`. Each
         floating-point data variable maps to an explicit `BloscCodec`
         when `settings.enabled` is ``True``, or to an explicit empty
         ``compressors`` list (zarr's raw bytes codec only, i.e.
         uncompressed) when ``False``.
     """
-    encoding: dict[str, dict[str, list[BloscCodec]]] = {}
+    encoding: dict[str, dict[str, object]] = {}
     for name, variable in dataset.data_vars.items():
         if not np.issubdtype(variable.dtype, np.floating):
             continue
@@ -99,8 +111,9 @@ def save_binned_dataset(
         (matching `ctd_processing.process.save_netcdf.write_netcdf`),
         compressed per `netcdf_compression`; ``"zarr"`` writes via
         `xarray.Dataset.to_zarr`, compressed per `zarr_compression`.
-        Every floating-point data variable is compressed; every
-        coordinate is always left uncompressed.
+        Every floating-point data variable is compressed; the ``time``
+        coordinate is always encoded per `_TIME_ENCODING` (never
+        compressed) rather than left to `xarray`'s own guess.
 
     Returns
     -------
@@ -109,8 +122,15 @@ def save_binned_dataset(
     """
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / filename
+    # `_TIME_ENCODING` requests nanosecond-since-epoch units; xarray silently
+    # writes NaT instead of raising/warning if `time`'s own resolution is
+    # coarser than that (e.g. datetime64[s]), so it's normalized to
+    # datetime64[ns] first to guarantee the two always match.
+    dataset = dataset.assign_coords(
+        time=dataset["time"].astype("datetime64[ns]")
+    )
     if bin_settings.output_format == "netcdf":
-        encoding: dict[str, dict[str, object]] = {}
+        encoding: dict[str, dict[str, object]] = {"time": dict(_TIME_ENCODING)}
         for name, variable in dataset.data_vars.items():
             variable_encoding = netcdf_compression_encoding(
                 variable.dtype, bin_settings.netcdf_compression
@@ -119,13 +139,11 @@ def save_binned_dataset(
                 encoding[str(name)] = variable_encoding
         dataset.to_netcdf(path, engine="h5netcdf", encoding=encoding)
     else:
-        dataset.to_zarr(
-            path,
-            mode="w",
-            encoding=_zarr_compression_encoding(
-                dataset, bin_settings.zarr_compression
-            ),
+        zarr_encoding = _zarr_compression_encoding(
+            dataset, bin_settings.zarr_compression
         )
+        zarr_encoding["time"] = dict(_TIME_ENCODING)
+        dataset.to_zarr(path, mode="w", encoding=zarr_encoding)
     log_verbose(
         logger, "wrote %s binned dataset: %s", bin_settings.output_format, path
     )

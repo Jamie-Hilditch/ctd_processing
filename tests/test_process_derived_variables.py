@@ -263,13 +263,22 @@ def test_compute_derived_variables_despikes_before_deriving_downstream(
     despike configured for practical_salinity, that spike is replaced
     with NaN *before* absolute_salinity is derived from it, so the NaN
     -- not the raw outlier -- propagates into absolute_salinity too.
+
+    The non-spiked conductivity samples carry slight distinct offsets
+    (rather than all being exactly 35.0) so their residuals against the
+    rolling median aren't exact ties -- real sensor noise never ties bit
+    for bit, and an exact tie would collapse the MAD-based scale to 0.
     """
     _stub_gsw(monkeypatch)
     dataset = _dataset(n=5)
-    dataset.channels["electrical_conductivity"].data[2] = 350.0
-    despike = {
-        "practical_salinity": DespikeSettings(threshold=2.0, window_length=3)
-    }
+    dataset.channels["electrical_conductivity"].data[:] = [
+        35.0,
+        35.02,
+        350.0,
+        34.99,
+        35.01,
+    ]
+    despike = {"practical_salinity": DespikeSettings()}
 
     result = compute_derived_variables(
         dataset, DerivedVariablesSettings(), despike

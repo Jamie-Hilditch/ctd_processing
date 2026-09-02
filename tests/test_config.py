@@ -1070,11 +1070,11 @@ def test_process_derived_variables_rejects_unknown_key(tmp_path) -> None:
 
 
 def test_despike_settings_defaults() -> None:
-    """DespikeSettings' defaults match pyrsktools' own, plus max_iterations."""
+    """window_length matches pyrsktools'; threshold/iterations don't."""
     settings = DespikeSettings()
-    assert settings.threshold == 2.0
+    assert settings.threshold == 3.0
     assert settings.window_length == 3
-    assert settings.max_iterations == 5
+    assert settings.iterations == 1
 
 
 def test_despike_settings_rejects_even_window_length() -> None:

@@ -412,27 +412,30 @@
 # oxygen_concentration = false
 
 # [process.despiking] sets the project-wide default despike settings --
-# how many standard deviations of the residual against a rolling median
-# count as a spike, how wide that rolling median's window is, and how
-# many detect-and-replace passes to run (stopping early the first pass
-# that finds nothing new). Spikes are always replaced with NaN. These
-# are only defaults: whether a given channel is despiked at all is
-# configured per channel, in [process.channels.<name>] below -- setting
-# values here alone despikes nothing.
+# how many MAD-based (median absolute deviation) spread units of the
+# residual against a rolling median count as a spike, how wide that
+# rolling median's window is, and how many detect-and-replace passes to
+# run at most (stopping early the first pass that finds nothing new).
+# Spikes are always replaced with NaN. These are only defaults: whether a
+# given channel is despiked at all is configured per channel, in
+# [process.channels.<name>] below -- setting values here alone despikes
+# nothing.
 #
 # [process.despiking]
 
-# threshold (default: 2.0): number of standard deviations a point's
+# threshold (default: 3.0): number of MAD-based spread units a point's
 # residual against the rolling median must exceed to be flagged.
-# threshold = 2.0
+# threshold = 3.0
 
 # window_length (default: 3): width, in samples, of the rolling median
 # filter. Must be odd.
 # window_length = 3
 
-# max_iterations (default: 5): maximum number of detect-and-replace
-# passes to run.
-# max_iterations = 5
+# iterations (default: 1): maximum number of detect-and-replace passes
+# to run. Because the MAD-based spread isn't inflated by the spikes it's
+# measuring, a single pass usually already catches everything; this
+# mostly exists as an escape valve for unusual data.
+# iterations = 1
 
 # [process.channels.<name>] sections are optional and configure
 # per-channel output settings: despiking and output precision. <name>
@@ -454,17 +457,16 @@
 # [process.channels.temperature]
 # despike = true
 #
-# despiking (optional): overrides threshold/window_length/max_iterations
-# from [process.despiking] for just this channel (any field left out
-# inherits the project-wide default). Only takes effect when despike is
-# true above -- setting this alone, without despike = true, does
-# nothing.
+# despiking (optional): overrides threshold/window_length/iterations from
+# [process.despiking] for just this channel (any field left out inherits
+# the project-wide default). Only takes effect when despike is true
+# above -- setting this alone, without despike = true, does nothing.
 #
 # [process.channels.practical_salinity]
 # despike = true
 #
 # [process.channels.practical_salinity.despiking]
-# threshold = 3.0
+# threshold = 4.0
 
 # output_dtype (optional, default: unset, meaning use [process]'s
 # project-wide output_dtype below): the numpy floating-point dtype
