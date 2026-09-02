@@ -546,9 +546,15 @@ class DespikeChannelOverride(BaseModel):
     threshold : float or None
         Override of the project-wide `DespikeSettings.threshold` for
         this channel. Optional; defaults to ``None``, meaning inherit.
-    window_length : int or None
-        Override of the project-wide `DespikeSettings.window_length` for
-        this channel. Not validated here -- an even value only fails
+    reference_window_length : int or None
+        Override of the project-wide
+        `DespikeSettings.reference_window_length` for this channel. Not
+        validated here -- an even value only fails once merged and
+        resolved (see `resolve_despike_settings`). Optional; defaults to
+        ``None``, meaning inherit.
+    scale_window_length : int or None
+        Override of the project-wide `DespikeSettings.scale_window_length`
+        for this channel. Not validated here -- an even value only fails
         once merged and resolved (see `resolve_despike_settings`).
         Optional; defaults to ``None``, meaning inherit.
     iterations : int or None
@@ -559,7 +565,8 @@ class DespikeChannelOverride(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     threshold: float | None = None
-    window_length: int | None = None
+    reference_window_length: int | None = None
+    scale_window_length: int | None = None
     iterations: int | None = None
 
 
@@ -568,10 +575,11 @@ class DespikeSettings(BaseModel):
 
     See `ctd_processing.process.despike` and
     `ctd_processing.config.resolve_despike_settings`. A channel is
-    smoothed with a rolling median filter of `window_length` to get a
-    "reference" series; points whose residual against that reference
-    exceeds `threshold` times a MAD-based (median absolute deviation)
-    robust estimate of the residual's spread are replaced with NaN. This
+    smoothed with a rolling median filter of `reference_window_length` to
+    get a "reference" series; points whose residual against that
+    reference exceeds `threshold` times a MAD-based (median absolute
+    deviation) robust estimate of the residual's local spread -- computed
+    over the wider `scale_window_length` -- are replaced with NaN. This
     can repeat, up to `iterations` times, stopping early the first pass
     that finds no new spikes -- but because the MAD-based spread isn't
     inflated by the spikes it's measuring (unlike a plain standard
@@ -591,10 +599,17 @@ class DespikeSettings(BaseModel):
         identifiers. This is a deliberate divergence from
         `pyrsktools.RSK.despike`, which uses a plain standard deviation
         with a default of ``2.0``.
-    window_length : int
-        Width, in samples, of the rolling median filter. Must be odd.
-        Defaults to ``3``, matching `pyrsktools.RSK.despike`'s own
-        default.
+    reference_window_length : int
+        Width, in samples, of the rolling median filter used for the
+        "reference" series. Must be odd. Defaults to ``3``, matching
+        `pyrsktools.RSK.despike`'s own default -- small, so the reference
+        stays responsive to real structure in the data.
+    scale_window_length : int
+        Width, in samples, of the window the MAD-based spread estimate is
+        computed over. Must be odd. Defaults to ``11`` -- meaningfully
+        wider than `reference_window_length`, since a robust spread
+        estimate needs more samples to be statistically stable than the
+        reference needs to stay responsive.
     iterations : int
         Maximum number of detect-and-replace passes to run. Defaults to
         ``1`` -- a pass that finds nothing new stops early regardless,
@@ -606,15 +621,22 @@ class DespikeSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     threshold: float = 3.0
-    window_length: int = 3
+    reference_window_length: int = 3
+    scale_window_length: int = 11
     iterations: int = 1
 
     @model_validator(mode="after")
-    def _validate_window_length(self) -> "DespikeSettings":
-        """Require an odd `window_length`."""
-        if self.window_length % 2 == 0:
+    def _validate_window_lengths(self) -> "DespikeSettings":
+        """Require odd `reference_window_length` and `scale_window_length`."""
+        if self.reference_window_length % 2 == 0:
             raise ValueError(
-                f"window_length must be odd; got {self.window_length}."
+                "reference_window_length must be odd; got "
+                f"{self.reference_window_length}."
+            )
+        if self.scale_window_length % 2 == 0:
+            raise ValueError(
+                "scale_window_length must be odd; got "
+                f"{self.scale_window_length}."
             )
         return self
 
@@ -644,7 +666,7 @@ class ChannelSettings(BaseModel):
     despiking : DespikeChannelOverride
         This channel's overrides of the project-wide
         `ProcessSettings.despiking` defaults' `threshold`/
-        `window_length`/`iterations` (a
+        `reference_window_length`/`scale_window_length`/`iterations` (a
         ``[process.channels.<name>.despiking]`` table). Only takes
         effect when `despike` is ``True`` -- a channel with `despike`
         left at ``False`` is not despiked regardless of what's set here.
@@ -1321,8 +1343,9 @@ def resolve_despike_settings(
 
     For each `process_settings.channels` entry whose `despike` is
     ``True``, deep-merges its `despiking`'s non-``None`` override fields
-    onto `process_settings.despiking`'s own `threshold`/`window_length`/
-    `iterations` (the project-wide defaults) and validates the
+    onto `process_settings.despiking`'s own `threshold`/
+    `reference_window_length`/`scale_window_length`/`iterations` (the
+    project-wide defaults) and validates the
     result -- the same override mechanism `resolve_process_settings`
     uses for instrument/deployment overrides, applied one level deeper.
     A channel with `despike` left at its default of ``False`` is not
@@ -1393,9 +1416,9 @@ def _validate_declared_overrides(settings: Settings) -> None:
     config-load time rather than only when that specific instrument or
     deployment is later processed. `channels.*.despiking` overrides are
     additionally expanded via `resolve_despike_settings`, so a bad
-    per-channel despike override (e.g. an even `window_length`) also
-    fails here rather than at first use. This does not validate every
-    instrument x deployment combination (which one recorded which
+    per-channel despike override (e.g. an even `reference_window_length`)
+    also fails here rather than at first use. This does not validate
+    every instrument x deployment combination (which one recorded which
     deployment is only known once a ``.rsk`` file is actually read), so a
     genuine conflict between an instrument and a deployment override can
     still only surface at processing time.

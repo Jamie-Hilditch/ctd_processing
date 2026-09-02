@@ -413,13 +413,14 @@
 
 # [process.despiking] sets the project-wide default despike settings --
 # how many MAD-based (median absolute deviation) spread units of the
-# residual against a rolling median count as a spike, how wide that
-# rolling median's window is, and how many detect-and-replace passes to
-# run at most (stopping early the first pass that finds nothing new).
-# Spikes are always replaced with NaN. These are only defaults: whether a
-# given channel is despiked at all is configured per channel, in
-# [process.channels.<name>] below -- setting values here alone despikes
-# nothing.
+# residual against a rolling median count as a spike, how wide the two
+# rolling windows involved are (one smooths the reference series, a
+# separate wider one estimates the local spread), and how many
+# detect-and-replace passes to run at most (stopping early the first
+# pass that finds nothing new). Spikes are always replaced with NaN.
+# These are only defaults: whether a given channel is despiked at all is
+# configured per channel, in [process.channels.<name>] below -- setting
+# values here alone despikes nothing.
 #
 # [process.despiking]
 
@@ -427,9 +428,18 @@
 # residual against the rolling median must exceed to be flagged.
 # threshold = 3.0
 
-# window_length (default: 3): width, in samples, of the rolling median
-# filter. Must be odd.
-# window_length = 3
+# reference_window_length (default: 3): width, in samples, of the
+# rolling median filter that produces the reference series. Must be odd
+# -- kept small so the reference stays responsive to real structure in
+# the data.
+# reference_window_length = 3
+
+# scale_window_length (default: 11): width, in samples, of the window
+# the MAD-based local spread estimate is computed over. Must be odd --
+# meaningfully wider than reference_window_length, since a robust spread
+# estimate needs more samples to be statistically stable than the
+# reference needs to stay responsive.
+# scale_window_length = 11
 
 # iterations (default: 1): maximum number of detect-and-replace passes
 # to run. Because the MAD-based spread isn't inflated by the spikes it's
@@ -457,10 +467,11 @@
 # [process.channels.temperature]
 # despike = true
 #
-# despiking (optional): overrides threshold/window_length/iterations from
-# [process.despiking] for just this channel (any field left out inherits
-# the project-wide default). Only takes effect when despike is true
-# above -- setting this alone, without despike = true, does nothing.
+# despiking (optional): overrides threshold/reference_window_length/
+# scale_window_length/iterations from [process.despiking] for just this
+# channel (any field left out inherits the project-wide default). Only
+# takes effect when despike is true above -- setting this alone, without
+# despike = true, does nothing.
 #
 # [process.channels.practical_salinity]
 # despike = true

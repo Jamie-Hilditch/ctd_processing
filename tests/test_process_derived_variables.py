@@ -314,7 +314,9 @@ def test_compute_derived_variables_logs_zero_count_when_nothing_despiked(
     _stub_gsw(monkeypatch)
     dataset = _dataset(n=5)
     despike = {
-        "practical_salinity": DespikeSettings(threshold=2.0, window_length=3)
+        "practical_salinity": DespikeSettings(
+            threshold=2.0, reference_window_length=3
+        )
     }
     caplog.set_level(VERBOSE, logger="ctd_processing.process.derived_variables")
 

@@ -21,6 +21,71 @@ def test_despike_array_replaces_single_spike_with_nan() -> None:
     assert np.array_equal(np.delete(result, 4), np.delete(data, 4))
 
 
+def test_despike_array_local_scale_window_beats_a_global_one() -> None:
+    """A narrow scale_window_length localizes the spread; a wide one doesn't.
+
+    The first 10 samples are a quiet, low-noise region with one genuine
+    spike at index 5; the remaining 20 are a naturally noisier (but
+    spike-free) wandering region. With `scale_window_length` set almost
+    as wide as the whole array (mimicking a single whole-array MAD), the
+    noisy region's larger natural spread pulls the one shared scale to a
+    value that's simultaneously too tight for the noisy region (several
+    of its ordinary points cross threshold) and coincidentally still
+    catches the real spike. A narrow, local `scale_window_length`
+    resolves each region's own local spread instead: it flags only the
+    genuine spike, and leaves the entire noisy region alone.
+    """
+    data = np.array(
+        [
+            0.102,
+            -0.1278,
+            0.0209,
+            -0.0284,
+            -0.0226,
+            1.0,
+            -0.101,
+            -0.0116,
+            -0.0433,
+            0.1661,
+            0.4446,
+            0.0919,
+            -0.1893,
+            -0.8574,
+            -1.9125,
+            -2.3033,
+            -1.8214,
+            -2.0599,
+            -1.1022,
+            -1.302,
+            -1.2777,
+            0.2681,
+            0.8132,
+            0.308,
+            0.1251,
+            0.6657,
+            2.6007,
+            2.3311,
+            2.0876,
+            3.0899,
+        ]
+    )
+
+    wide, wide_count = despike_array(
+        data, DespikeSettings(scale_window_length=29, iterations=1)
+    )
+    narrow, narrow_count = despike_array(
+        data, DespikeSettings(scale_window_length=7, iterations=1)
+    )
+
+    assert wide_count > 1
+    assert np.isnan(wide[5])
+    assert np.isnan(wide[1])
+
+    assert narrow_count == 1
+    assert np.isnan(narrow[5])
+    assert np.array_equal(np.delete(narrow, 5), np.delete(data, 5))
+
+
 def test_despike_array_no_spikes_returns_unchanged_data() -> None:
     """Constant data has no spikes; nothing is replaced."""
     data = np.array([1.0, 1.0, 1.0, 1.0, 1.0])
@@ -80,10 +145,16 @@ def test_despike_array_extra_iterations_are_a_noop() -> None:
     assert np.array_equal(few[0], many[0], equal_nan=True)
 
 
-def test_despike_settings_rejects_even_window_length() -> None:
-    """An even window_length fails validation."""
+def test_despike_settings_rejects_even_reference_window_length() -> None:
+    """An even reference_window_length fails validation."""
     with pytest.raises(ValidationError):
-        DespikeSettings(window_length=4)
+        DespikeSettings(reference_window_length=4)
+
+
+def test_despike_settings_rejects_even_scale_window_length() -> None:
+    """An even scale_window_length fails validation."""
+    with pytest.raises(ValidationError):
+        DespikeSettings(scale_window_length=4)
 
 
 def test_despike_channel_rejects_non_floating_dtype() -> None:

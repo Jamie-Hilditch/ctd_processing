@@ -1070,17 +1070,24 @@ def test_process_derived_variables_rejects_unknown_key(tmp_path) -> None:
 
 
 def test_despike_settings_defaults() -> None:
-    """window_length matches pyrsktools'; threshold/iterations don't."""
+    """reference_window_length matches pyrsktools'; other fields don't."""
     settings = DespikeSettings()
     assert settings.threshold == 3.0
-    assert settings.window_length == 3
+    assert settings.reference_window_length == 3
+    assert settings.scale_window_length == 11
     assert settings.iterations == 1
 
 
-def test_despike_settings_rejects_even_window_length() -> None:
-    """An even window_length fails validation."""
+def test_despike_settings_rejects_even_reference_window_length() -> None:
+    """An even reference_window_length fails validation."""
     with pytest.raises(ValidationError):
-        DespikeSettings(window_length=4)
+        DespikeSettings(reference_window_length=4)
+
+
+def test_despike_settings_rejects_even_scale_window_length() -> None:
+    """An even scale_window_length fails validation."""
+    with pytest.raises(ValidationError):
+        DespikeSettings(scale_window_length=4)
 
 
 def test_process_despiking_defaults(tmp_path) -> None:
@@ -1110,14 +1117,14 @@ def test_resolve_despike_settings_uses_defaults_for_plain_true() -> None:
     """Despike = true uses despiking's project-wide defaults as-is."""
     process_settings = ProcessSettings(
         geolocation=_GEOLOCATION,
-        despiking=DespikeSettings(threshold=3.0, window_length=5),
+        despiking=DespikeSettings(threshold=3.0, reference_window_length=5),
         channels={"practical_salinity": ChannelSettings(despike=True)},
     )
 
     resolved = resolve_despike_settings(process_settings)
 
     assert resolved["practical_salinity"] == DespikeSettings(
-        threshold=3.0, window_length=5
+        threshold=3.0, reference_window_length=5
     )
 
 
@@ -1125,7 +1132,7 @@ def test_resolve_despike_settings_merges_partial_override() -> None:
     """A partial per-channel override changes only the given fields."""
     process_settings = ProcessSettings(
         geolocation=_GEOLOCATION,
-        despiking=DespikeSettings(threshold=2.0, window_length=5),
+        despiking=DespikeSettings(threshold=2.0, reference_window_length=5),
         channels={
             "practical_salinity": ChannelSettings(
                 despike=True,
@@ -1137,7 +1144,7 @@ def test_resolve_despike_settings_merges_partial_override() -> None:
     resolved = resolve_despike_settings(process_settings)
 
     assert resolved["practical_salinity"].threshold == 4.0
-    assert resolved["practical_salinity"].window_length == 5
+    assert resolved["practical_salinity"].reference_window_length == 5
 
 
 def test_resolve_despike_settings_ignores_despiking_when_despike_false() -> (
@@ -1177,7 +1184,7 @@ def test_load_settings_rejects_invalid_despike_channel_override(
         "[instruments.208532.process.channels.practical_salinity]\n"
         "despike = true\n"
         "[instruments.208532.process.channels.practical_salinity.despiking]\n"
-        "window_length = 4\n",
+        "reference_window_length = 4\n",
         encoding="utf-8",
     )
 
