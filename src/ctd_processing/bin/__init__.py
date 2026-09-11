@@ -112,7 +112,7 @@ def bin_deployment(
     total = len(ordered)
     binned = []
     for index, dataset in enumerate(ordered):
-        binned.append(bin_profile(dataset, settings.channel, edges))
+        binned.append(bin_profile(dataset, settings, edges))
         log_verbose(logger, "binned profile %d of %d", index + 1, total)
 
     combined = combine_binned_profiles(binned)

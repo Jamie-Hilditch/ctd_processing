@@ -944,13 +944,248 @@ class ProcessSettings(BaseModel):
         return value
 
 
+BinMethod = Literal[
+    "mean", "median", "trimmed_mean", "winsorized_mean", "huber", "biweight"
+]
+
+
+class TrimmedMeanSettings(BaseModel):
+    """Settings for the ``trimmed_mean`` bin-averaging method.
+
+    See `ctd_processing.bin.robust.trimmed_mean`.
+
+    Attributes
+    ----------
+    proportion_to_cut : float
+        Fraction of points dropped from each tail (by rank) before
+        averaging the rest. Must be in ``[0, 0.5)``. Defaults to ``0.2``
+        (20% from each end).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    proportion_to_cut: float = Field(default=0.2, ge=0.0, lt=0.5)
+
+
+class TrimmedMeanOverride(BaseModel):
+    """One channel's override of the project-wide `TrimmedMeanSettings`.
+
+    See `BinChannelSettings.trimmed_mean` and `resolve_bin_method`.
+
+    Attributes
+    ----------
+    proportion_to_cut : float or None
+        Override of the project-wide
+        `TrimmedMeanSettings.proportion_to_cut` for this channel. Must
+        be in ``[0, 0.5)`` if set. Optional; defaults to ``None``,
+        meaning inherit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    proportion_to_cut: float | None = Field(default=None, ge=0.0, lt=0.5)
+
+
+class WinsorizedMeanSettings(BaseModel):
+    """Settings for the ``winsorized_mean`` bin-averaging method.
+
+    See `ctd_processing.bin.robust.winsorized_mean`.
+
+    Attributes
+    ----------
+    limits : float
+        Fraction of points clipped to the nearest retained value at each
+        tail (by rank) before averaging. Must be in ``[0, 0.5)``.
+        Defaults to ``0.2`` (20% at each end).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    limits: float = Field(default=0.2, ge=0.0, lt=0.5)
+
+
+class WinsorizedMeanOverride(BaseModel):
+    """One channel's override of the project-wide `WinsorizedMeanSettings`.
+
+    See `BinChannelSettings.winsorized_mean` and `resolve_bin_method`.
+
+    Attributes
+    ----------
+    limits : float or None
+        Override of the project-wide `WinsorizedMeanSettings.limits` for
+        this channel. Must be in ``[0, 0.5)`` if set. Optional; defaults
+        to ``None``, meaning inherit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    limits: float | None = Field(default=None, ge=0.0, lt=0.5)
+
+
+class HuberSettings(BaseModel):
+    """Settings for the ``huber`` bin-averaging method.
+
+    See `ctd_processing.bin.robust.huber_location`.
+
+    Attributes
+    ----------
+    k : float
+        Huber's tuning constant, in MAD-based scale units: residuals
+        within `k` keep full weight, residuals beyond it are
+        downweighted proportionally to ``1 / |residual|``. Defaults to
+        ``1.345``, the standard choice giving 95% efficiency relative to
+        the mean on clean Gaussian data.
+    max_iter : int
+        Maximum number of IRLS iterations. Defaults to ``100``.
+    tol : float
+        Convergence tolerance: iteration stops once the location's
+        change between passes drops below ``tol * scale``. Defaults to
+        ``1e-8``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    k: float = Field(default=1.345, gt=0.0)
+    max_iter: int = Field(default=100, ge=1)
+    tol: float = Field(default=1e-8, gt=0.0)
+
+
+class HuberOverride(BaseModel):
+    """One channel's override of the project-wide `HuberSettings`.
+
+    See `BinChannelSettings.huber` and `resolve_bin_method`.
+
+    Attributes
+    ----------
+    k : float or None
+        Override of the project-wide `HuberSettings.k` for this
+        channel. Optional; defaults to ``None``, meaning inherit.
+    max_iter : int or None
+        Override of the project-wide `HuberSettings.max_iter` for this
+        channel. Optional; defaults to ``None``, meaning inherit.
+    tol : float or None
+        Override of the project-wide `HuberSettings.tol` for this
+        channel. Optional; defaults to ``None``, meaning inherit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    k: float | None = Field(default=None, gt=0.0)
+    max_iter: int | None = Field(default=None, ge=1)
+    tol: float | None = Field(default=None, gt=0.0)
+
+
+class BiweightSettings(BaseModel):
+    """Settings for the ``biweight`` bin-averaging method.
+
+    See `ctd_processing.bin.robust.biweight_location`.
+
+    Attributes
+    ----------
+    c : float
+        Tukey's biweight tuning constant, in MAD-based scale units:
+        residuals beyond `c` get exactly zero weight. Defaults to
+        ``4.685``, the standard choice giving 95% efficiency relative to
+        the mean on clean Gaussian data.
+    max_iter : int
+        Maximum number of IRLS iterations. Defaults to ``100``.
+    tol : float
+        Convergence tolerance: iteration stops once the location's
+        change between passes drops below ``tol * scale``. Defaults to
+        ``1e-8``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    c: float = Field(default=4.685, gt=0.0)
+    max_iter: int = Field(default=100, ge=1)
+    tol: float = Field(default=1e-8, gt=0.0)
+
+
+class BiweightOverride(BaseModel):
+    """One channel's override of the project-wide `BiweightSettings`.
+
+    See `BinChannelSettings.biweight` and `resolve_bin_method`.
+
+    Attributes
+    ----------
+    c : float or None
+        Override of the project-wide `BiweightSettings.c` for this
+        channel. Optional; defaults to ``None``, meaning inherit.
+    max_iter : int or None
+        Override of the project-wide `BiweightSettings.max_iter` for
+        this channel. Optional; defaults to ``None``, meaning inherit.
+    tol : float or None
+        Override of the project-wide `BiweightSettings.tol` for this
+        channel. Optional; defaults to ``None``, meaning inherit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    c: float | None = Field(default=None, gt=0.0)
+    max_iter: int | None = Field(default=None, ge=1)
+    tol: float | None = Field(default=None, gt=0.0)
+
+
+class BinChannelSettings(BaseModel):
+    """One channel's override of the project-wide bin-averaging method.
+
+    An entry in `BinSettings.channels`, keyed by channel name -- the same
+    key namespace as `ProcessSettings.channels`. A channel with no entry
+    here inherits `BinSettings.method` and every project-wide per-method
+    setting unchanged. Unlike `ChannelSettings.despike`, there is no
+    enable/disable flag here: every channel is always bin-averaged by
+    some method, whether inherited or overridden (see
+    `resolve_bin_method`).
+
+    Attributes
+    ----------
+    method : BinMethod or None
+        Override of the project-wide `BinSettings.method` for this
+        channel. Optional; defaults to ``None``, meaning inherit.
+    trimmed_mean : TrimmedMeanOverride
+        This channel's overrides of the project-wide
+        `BinSettings.trimmed_mean` defaults. Only takes effect when the
+        resolved `method` is ``"trimmed_mean"``. Optional; every field
+        defaults to ``None``, meaning inherit.
+    winsorized_mean : WinsorizedMeanOverride
+        This channel's overrides of the project-wide
+        `BinSettings.winsorized_mean` defaults. Only takes effect when
+        the resolved `method` is ``"winsorized_mean"``. Optional; every
+        field defaults to ``None``, meaning inherit.
+    huber : HuberOverride
+        This channel's overrides of the project-wide `BinSettings.huber`
+        defaults. Only takes effect when the resolved `method` is
+        ``"huber"``. Optional; every field defaults to ``None``, meaning
+        inherit.
+    biweight : BiweightOverride
+        This channel's overrides of the project-wide
+        `BinSettings.biweight` defaults. Only takes effect when the
+        resolved `method` is ``"biweight"``. Optional; every field
+        defaults to ``None``, meaning inherit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    method: BinMethod | None = None
+    trimmed_mean: TrimmedMeanOverride = Field(
+        default_factory=TrimmedMeanOverride
+    )
+    winsorized_mean: WinsorizedMeanOverride = Field(
+        default_factory=WinsorizedMeanOverride
+    )
+    huber: HuberOverride = Field(default_factory=HuberOverride)
+    biweight: BiweightOverride = Field(default_factory=BiweightOverride)
+
+
 class BinSettings(BaseModel):
     """Settings specific to the ``bin`` command.
 
     See `ctd_processing.process.binning`, which bins every profile passed
-    to ``bin`` onto a common grid along `channel`, averages every other
-    channel within each bin, and stacks the results along a new
-    ``profile`` dimension.
+    to ``bin`` onto a common grid along `channel`, reduces every other
+    channel within each bin using `method` (or that channel's override
+    in `channels`, see `resolve_bin_method`), and stacks the results
+    along a new ``profile`` dimension.
 
     Attributes
     ----------
@@ -998,6 +1233,42 @@ class BinSettings(BaseModel):
         Compression settings applied when `output_format` is ``"zarr"``
         (see `ZarrCompressionSettings`). Optional; every field has a
         default. Ignored when `output_format` is ``"netcdf"``.
+    method : BinMethod
+        Project-wide default method used to reduce every other channel's
+        values within each bin (see `ctd_processing.bin.robust`).
+        ``"mean"`` and ``"median"`` take no parameters; every other
+        method's parameters are configured on the matching field below.
+        Whether a given channel uses this default or an override is
+        configured on that channel's entry in `channels` (see
+        `resolve_bin_method`). Defaults to ``"huber"`` -- a robust
+        M-estimator that matches the plain mean's efficiency on clean
+        data but resists the occasional non-physical outlier, unlike
+        `"mean"`'s 0% breakdown point.
+    trimmed_mean : TrimmedMeanSettings
+        Project-wide default settings for the ``"trimmed_mean"`` method
+        (see `TrimmedMeanSettings`). Only takes effect for a channel
+        whose resolved `method` is ``"trimmed_mean"``. Optional; every
+        field has a default.
+    winsorized_mean : WinsorizedMeanSettings
+        Project-wide default settings for the ``"winsorized_mean"``
+        method (see `WinsorizedMeanSettings`). Only takes effect for a
+        channel whose resolved `method` is ``"winsorized_mean"``.
+        Optional; every field has a default.
+    huber : HuberSettings
+        Project-wide default settings for the ``"huber"`` method (see
+        `HuberSettings`). Only takes effect for a channel whose resolved
+        `method` is ``"huber"``. Optional; every field has a default.
+    biweight : BiweightSettings
+        Project-wide default settings for the ``"biweight"`` method (see
+        `BiweightSettings`). Only takes effect for a channel whose
+        resolved `method` is ``"biweight"``. Optional; every field has a
+        default.
+    channels : dict[str, BinChannelSettings]
+        Per-channel bin-averaging method overrides, keyed the same way
+        as `ProcessSettings.channels` (see `BinChannelSettings`). A
+        channel needs no entry here at all; an absent entry just means
+        it inherits `method` and every project-wide per-method setting
+        unchanged. Defaults to an empty dict.
 
     Raises
     ------
@@ -1019,6 +1290,16 @@ class BinSettings(BaseModel):
     zarr_compression: ZarrCompressionSettings = Field(
         default_factory=ZarrCompressionSettings
     )
+    method: BinMethod = "huber"
+    trimmed_mean: TrimmedMeanSettings = Field(
+        default_factory=TrimmedMeanSettings
+    )
+    winsorized_mean: WinsorizedMeanSettings = Field(
+        default_factory=WinsorizedMeanSettings
+    )
+    huber: HuberSettings = Field(default_factory=HuberSettings)
+    biweight: BiweightSettings = Field(default_factory=BiweightSettings)
+    channels: dict[str, BinChannelSettings] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_step_and_range(self) -> "BinSettings":
@@ -1381,6 +1662,70 @@ def resolve_despike_settings(
             _deep_merge(base, override)
         )
     return resolved
+
+
+_BIN_METHOD_SETTINGS: dict[BinMethod, type[BaseModel]] = {
+    "trimmed_mean": TrimmedMeanSettings,
+    "winsorized_mean": WinsorizedMeanSettings,
+    "huber": HuberSettings,
+    "biweight": BiweightSettings,
+}
+
+
+def resolve_bin_method(
+    settings: BinSettings, channel: str
+) -> tuple[BinMethod, BaseModel | None]:
+    """Resolve one channel's bin-averaging method and its settings.
+
+    Looks up `channel` in `settings.channels`; if present and its
+    `BinChannelSettings.method` is set, that override wins, else
+    `settings.method` (the project-wide default) applies -- every
+    channel resolves to *some* method, unlike despike settings, which a
+    channel may opt out of entirely. If the resolved method takes
+    settings (every method except ``"mean"`` and ``"median"``, which
+    take none), deep-merges that channel's non-``None`` override fields
+    for that method onto the project-wide defaults for the same method
+    and validates the result -- the same override mechanism
+    `resolve_despike_settings` uses, generalized to a method-dependent
+    field name.
+
+    Parameters
+    ----------
+    settings : BinSettings
+        Settings providing the project-wide `BinSettings.method` and
+        per-method defaults, plus `BinSettings.channels` (each channel's
+        method override).
+    channel : str
+        The channel key to resolve, e.g. ``"practical_salinity"``.
+
+    Returns
+    -------
+    tuple[BinMethod, pydantic.BaseModel or None]
+        The resolved method, and its resolved settings -- ``None`` for
+        ``"mean"``/``"median"``, which take no parameters.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If the channel's merged override does not form valid settings
+        for the resolved method.
+    """
+    channel_settings = settings.channels.get(channel)
+    method = settings.method
+    if channel_settings is not None and channel_settings.method is not None:
+        method = channel_settings.method
+
+    settings_type = _BIN_METHOD_SETTINGS.get(method)
+    if settings_type is None:
+        return method, None
+
+    base = getattr(settings, method).model_dump(mode="json")
+    if channel_settings is not None:
+        override = getattr(channel_settings, method).model_dump(
+            mode="json", exclude_none=True
+        )
+        base = _deep_merge(base, override)
+    return method, settings_type.model_validate(base)
 
 
 def resolve_output_dtype(process_settings: ProcessSettings, name: str) -> str:

@@ -148,16 +148,22 @@ class TestBinProfile:
         )
 
         with pytest.raises(ValueError, match="sea_pressure"):
-            bin_profile(dataset, "sea_pressure", np.array([0.0, -5.0]))
+            bin_profile(
+                dataset,
+                BinSettings(channel="sea_pressure"),
+                np.array([0.0, -5.0]),
+            )
 
     def test_averages_within_each_bin(self) -> None:
-        """Samples in the same bin are NaN-aware averaged."""
+        """Samples in the same bin are NaN-aware averaged (mean method)."""
         z = np.array([-0.1, -0.4, -0.6, -1.4])
         temperature = np.array([10.0, 12.0, 20.0, np.nan])
         dataset = _profile(z, temperature, start="2026-01-01")
         edges = np.array([0.0, -0.5, -1.0, -1.5])
 
-        result = bin_profile(dataset, "z", edges)
+        result = bin_profile(
+            dataset, BinSettings(channel="z", method="mean"), edges
+        )
 
         # Bins are always presented in ascending numeric order regardless
         # of the configured edges' direction (see bin_profile's docstring),
@@ -171,7 +177,9 @@ class TestBinProfile:
             np.array([-0.1, -0.6]), np.array([1.0, 2.0]), start="2026-01-01"
         )
 
-        result = bin_profile(dataset, "z", np.array([0.0, -0.5, -1.0]))
+        result = bin_profile(
+            dataset, BinSettings(channel="z"), np.array([0.0, -0.5, -1.0])
+        )
 
         assert "z" not in result.data_vars
         assert "z" in result.coords
@@ -182,7 +190,9 @@ class TestBinProfile:
             np.array([-0.1, -0.6]), np.array([1.0, 2.0]), start="2026-01-01"
         )
 
-        result = bin_profile(dataset, "z", np.array([0.0, -0.5, -1.0]))
+        result = bin_profile(
+            dataset, BinSettings(channel="z"), np.array([0.0, -0.5, -1.0])
+        )
 
         assert result["z"].attrs["standard_name"] == "height"
         assert result["z"].attrs["units"] == "m"
@@ -197,7 +207,9 @@ class TestBinProfile:
             longitude=-45.0,
         )
 
-        result = bin_profile(dataset, "z", np.array([0.0, -0.5, -1.0]))
+        result = bin_profile(
+            dataset, BinSettings(channel="z"), np.array([0.0, -0.5, -1.0])
+        )
 
         assert result["time"].values.item() == np.datetime64(
             "2026-08-09T03:04:00"
@@ -220,7 +232,9 @@ class TestBinProfile:
         dataset.metadata["profile_start_time"] = "2026-01-01T00:00:00"
         dataset.metadata["profile_end_time"] = "2026-01-01T00:00:01"
 
-        result = bin_profile(dataset, "z", np.array([0.0, -0.5, -1.0]))
+        result = bin_profile(
+            dataset, BinSettings(channel="z"), np.array([0.0, -0.5, -1.0])
+        )
 
         assert result["time"].dtype.kind == "M"
         assert result["profile_end_time"].dtype.kind == "M"
@@ -234,12 +248,38 @@ class TestBinProfile:
             extra_history="did a thing",
         )
 
-        result = bin_profile(dataset, "z", np.array([0.0, -0.5, -1.0]))
+        result = bin_profile(
+            dataset, BinSettings(channel="z"), np.array([0.0, -0.5, -1.0])
+        )
 
         assert result.attrs["instrument_serial_number"] == 208532
         assert result.attrs["source_file"] == "243188_20260809_0304.rsk"
         assert "did a thing" in result.attrs["history"]
         assert "latitude" not in result.attrs
+
+    def test_resolves_method_per_channel(self) -> None:
+        """A channel-specific method override is honored over the default.
+
+        With one genuinely outlying point in a bin, the project-wide
+        default (mean) is pulled toward it, but a per-channel override
+        to the median is not.
+        """
+        z = np.array([-0.1, -0.2, -0.3])
+        temperature = np.array([10.0, 1000.0, 10.0])
+        dataset = _profile(z, temperature, start="2026-01-01")
+        edges = np.array([0.0, -1.0])
+        settings = BinSettings(
+            channel="z",
+            method="mean",
+            channels={
+                "sea_water_temperature": {"method": "median"},
+            },
+        )
+
+        result = bin_profile(dataset, settings, edges)
+
+        temp = result["sea_water_temperature"].squeeze(("profile", "z")).item()
+        assert temp == pytest.approx(10.0)
 
 
 class TestCombineBinnedProfiles:
@@ -252,14 +292,14 @@ class TestCombineBinnedProfiles:
             _profile(
                 np.array([-0.1, -0.6]), np.array([1.0, 2.0]), start="2026-01-01"
             ),
-            "z",
+            BinSettings(channel="z"),
             edges,
         )
         p2 = bin_profile(
             _profile(
                 np.array([-0.1, -0.6]), np.array([3.0, 4.0]), start="2026-01-02"
             ),
-            "z",
+            BinSettings(channel="z"),
             edges,
         )
 
@@ -284,7 +324,7 @@ class TestCombineBinnedProfiles:
                 latitude=45.0,
                 longitude=-125.0,
             ),
-            "z",
+            BinSettings(channel="z"),
             edges,
         )
         p2 = bin_profile(
@@ -295,7 +335,7 @@ class TestCombineBinnedProfiles:
                 latitude=45.0,
                 longitude=-125.0,
             ),
-            "z",
+            BinSettings(channel="z"),
             edges,
         )
 
@@ -315,7 +355,7 @@ class TestCombineBinnedProfiles:
             _profile(
                 np.array([-0.1, -0.6]), np.array([1.0, 2.0]), start="2026-01-01"
             ),
-            "z",
+            BinSettings(channel="z"),
             edges,
         )
         p2 = bin_profile(
@@ -325,7 +365,7 @@ class TestCombineBinnedProfiles:
                 start="2026-01-02",
                 extra_history="an extra step",
             ),
-            "z",
+            BinSettings(channel="z"),
             edges,
         )
 
@@ -342,14 +382,14 @@ class TestCombineBinnedProfiles:
             _profile(
                 np.array([-0.1, -0.6]), np.array([1.0, 2.0]), start="2026-01-01"
             ),
-            "z",
+            BinSettings(channel="z"),
             edges,
         )
         p2 = bin_profile(
             _profile(
                 np.array([-0.1, -0.6]), np.array([3.0, 4.0]), start="2026-01-02"
             ),
-            "z",
+            BinSettings(channel="z"),
             edges,
         )
 

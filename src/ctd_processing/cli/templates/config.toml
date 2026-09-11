@@ -489,9 +489,10 @@
 
 # [bin] configures the `bin` command, which reads back every profile file
 # for one deployment, bins each profile's channels onto a common grid
-# along one channel (default "z"), averages every other channel within
-# each bin, and stacks the results along a new "profile" dimension into
-# one combined dataset written to paths.binned_directory.
+# along one channel (default "z"), reduces every other channel within
+# each bin using method below (or that channel's own override in
+# [bin.channels.<name>]), and stacks the results along a new "profile"
+# dimension into one combined dataset written to paths.binned_directory.
 #
 # [bin]
 
@@ -557,6 +558,98 @@
 # cname = "zstd"
 # clevel = 5
 # shuffle = "shuffle"
+
+# method (default: "huber"): project-wide default method used to reduce
+# every other channel's values within each bin. One of "mean" (plain
+# NaN-aware average, 0% breakdown -- a single non-physical outlier in a
+# bin can bias it), "median" (maximal breakdown, ~64% Gaussian
+# efficiency), "trimmed_mean", "winsorized_mean", "huber" (the default --
+# a robust M-estimator matching the mean's efficiency on clean data while
+# resisting outliers), or "biweight" (Tukey's biweight/bisquare --
+# excludes points past its cutoff entirely, rather than downweighting
+# them asymptotically like huber). Whether a given channel uses this
+# default or its own override is configured per channel, in
+# [bin.channels.<name>] below.
+# method = "huber"
+
+# [bin.trimmed_mean] configures the "trimmed_mean" method: drop the most
+# extreme proportion_to_cut fraction of points from each tail (by rank)
+# before averaging the rest. Only takes effect for a channel whose
+# resolved method is "trimmed_mean".
+#
+# proportion_to_cut (default: 0.2): fraction dropped from each tail.
+# Must be in [0, 0.5).
+# [bin.trimmed_mean]
+# proportion_to_cut = 0.2
+
+# [bin.winsorized_mean] configures the "winsorized_mean" method: like
+# trimmed_mean, but clips the most extreme limits fraction of points at
+# each tail to the nearest retained value instead of dropping them, then
+# averages. Only takes effect for a channel whose resolved method is
+# "winsorized_mean".
+#
+# limits (default: 0.2): fraction clipped at each tail. Must be in
+# [0, 0.5).
+# [bin.winsorized_mean]
+# limits = 0.2
+
+# [bin.huber] configures the "huber" method: an iteratively reweighted
+# M-estimator that jointly re-estimates location and a MAD-based scale
+# each pass, downweighting (but never fully excluding) points far from
+# the current location. Only takes effect for a channel whose resolved
+# method is "huber".
+#
+# k (default: 1.345): Huber's tuning constant, in MAD-based scale units
+# -- residuals within k keep full weight, beyond it they're downweighted
+# proportionally to 1/|residual|. 1.345 is the standard choice, giving
+# 95% efficiency relative to the mean on clean Gaussian data.
+#
+# max_iter (default: 100): maximum number of IRLS iterations.
+#
+# tol (default: 1e-8): convergence tolerance -- iteration stops once the
+# location's change between passes drops below tol * scale.
+# [bin.huber]
+# k = 1.345
+# max_iter = 100
+# tol = 1e-8
+
+# [bin.biweight] configures the "biweight" method: like [bin.huber], but
+# with a redescending weight that drops to exactly 0 past its cutoff
+# instead of asymptotically shrinking -- points far enough from the
+# current location are fully excluded, not just downweighted. Only takes
+# effect for a channel whose resolved method is "biweight".
+#
+# c (default: 4.685): Tukey's biweight tuning constant, in MAD-based
+# scale units -- residuals beyond c get exactly zero weight. 4.685 is
+# the standard choice, giving 95% efficiency relative to the mean on
+# clean Gaussian data.
+#
+# max_iter (default: 100): maximum number of IRLS iterations.
+#
+# tol (default: 1e-8): convergence tolerance -- iteration stops once the
+# location's change between passes drops below tol * scale.
+# [bin.biweight]
+# c = 4.685
+# max_iter = 100
+# tol = 1e-8
+
+# [bin.channels.<name>] sections are optional and override the
+# project-wide method above for one specific channel, keyed the same way
+# as [process.channels.<name>]. A channel with no section here inherits
+# method and every project-wide per-method setting unchanged -- unlike
+# [process.channels.<name>].despike, there is no enable/disable flag
+# here, since every channel is always bin-averaged by some method.
+#
+# method (optional, default: unset, meaning inherit the project-wide
+# method above): this channel's method override.
+#
+# trimmed_mean/winsorized_mean/huber/biweight (optional): this channel's
+# overrides of the matching project-wide settings table above (any field
+# left out inherits the project-wide default). Only the table matching
+# this channel's resolved method takes effect.
+#
+# [bin.channels.practical_salinity]
+# method = "median"
 
 # [instruments.<serial_number>] sections are optional and override
 # [process] settings for one specific instrument, identified by its

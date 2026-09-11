@@ -4,7 +4,9 @@ import pytest
 from pydantic import ValidationError
 
 from ctd_processing.config import (
+    BinChannelSettings,
     BinSettings,
+    BiweightSettings,
     ChannelSettings,
     CTLagSettings,
     DeploymentSettings,
@@ -12,6 +14,7 @@ from ctd_processing.config import (
     DespikeChannelOverride,
     DespikeSettings,
     GeolocationSettings,
+    HuberSettings,
     InstrumentSettings,
     NetcdfCompressionSettings,
     ParquetCompressionSettings,
@@ -21,10 +24,13 @@ from ctd_processing.config import (
     ProjectSettings,
     RawChannelSettings,
     Settings,
+    TrimmedMeanSettings,
+    WinsorizedMeanSettings,
     ZarrCompressionSettings,
     load_settings,
     merge_overrides,
     parse_overrides,
+    resolve_bin_method,
     resolve_despike_settings,
     resolve_output_dtype,
     resolve_process_settings,
@@ -1200,6 +1206,147 @@ def test_channel_settings_despike_bool_defaults_false() -> None:
 def test_channel_settings_despiking_defaults_empty() -> None:
     """ChannelSettings.despiking defaults to an all-None override."""
     assert ChannelSettings().despiking == DespikeChannelOverride()
+
+
+def test_bin_settings_method_defaults_to_huber() -> None:
+    """BinSettings.method defaults to huber, channels to {}."""
+    settings = BinSettings()
+
+    assert settings.method == "huber"
+    assert settings.channels == {}
+
+
+def test_bin_channel_settings_defaults_to_inherit() -> None:
+    """BinChannelSettings.method defaults to None (inherit)."""
+    assert BinChannelSettings().method is None
+
+
+def test_resolve_bin_method_inherits_project_wide_default() -> None:
+    """A channel with no entry in `channels` inherits `method`."""
+    settings = BinSettings(method="median")
+
+    method, resolved = resolve_bin_method(settings, "practical_salinity")
+
+    assert method == "median"
+    assert resolved is None
+
+
+def test_resolve_bin_method_returns_none_for_mean_and_median() -> None:
+    """mean/median take no parameters, so their settings are None."""
+    settings = BinSettings(method="mean")
+
+    method, resolved = resolve_bin_method(settings, "practical_salinity")
+
+    assert method == "mean"
+    assert resolved is None
+
+
+def test_resolve_bin_method_honors_per_channel_override() -> None:
+    """A channel's `method` override wins over the project-wide default."""
+    settings = BinSettings(
+        method="mean",
+        channels={"practical_salinity": BinChannelSettings(method="huber")},
+    )
+
+    method, resolved = resolve_bin_method(settings, "practical_salinity")
+
+    assert method == "huber"
+    assert resolved == HuberSettings()
+
+
+def test_resolve_bin_method_uses_defaults_for_plain_override() -> None:
+    """A method override with no settings override.
+
+    Uses the project-wide defaults for that method as-is.
+    """
+    settings = BinSettings(
+        method="mean",
+        huber=HuberSettings(k=2.0, max_iter=50),
+        channels={"practical_salinity": BinChannelSettings(method="huber")},
+    )
+
+    method, resolved = resolve_bin_method(settings, "practical_salinity")
+
+    assert method == "huber"
+    assert resolved == HuberSettings(k=2.0, max_iter=50)
+
+
+def test_resolve_bin_method_merges_partial_override() -> None:
+    """A partial per-channel settings override changes only given fields."""
+    settings = BinSettings(
+        method="huber",
+        huber=HuberSettings(k=2.0, max_iter=50),
+        channels={"practical_salinity": BinChannelSettings(huber={"k": 4.0})},
+    )
+
+    method, resolved = resolve_bin_method(settings, "practical_salinity")
+
+    assert method == "huber"
+    assert isinstance(resolved, HuberSettings)
+    assert resolved.k == 4.0
+    assert resolved.max_iter == 50
+
+
+def test_resolve_bin_method_merges_partial_override_per_method() -> None:
+    """The merge picks the settings field matching the resolved method."""
+    settings = BinSettings(
+        trimmed_mean=TrimmedMeanSettings(proportion_to_cut=0.3),
+        winsorized_mean=WinsorizedMeanSettings(limits=0.3),
+        biweight=BiweightSettings(c=5.0),
+        channels={
+            "practical_salinity": BinChannelSettings(
+                method="trimmed_mean",
+                trimmed_mean={"proportion_to_cut": 0.1},
+            ),
+            "sea_water_temperature": BinChannelSettings(
+                method="winsorized_mean"
+            ),
+            "conservative_temperature": BinChannelSettings(method="biweight"),
+        },
+    )
+
+    salinity_method, salinity_settings = resolve_bin_method(
+        settings, "practical_salinity"
+    )
+    temperature_method, temperature_settings = resolve_bin_method(
+        settings, "sea_water_temperature"
+    )
+    conservative_method, conservative_settings = resolve_bin_method(
+        settings, "conservative_temperature"
+    )
+
+    assert salinity_method == "trimmed_mean"
+    assert isinstance(salinity_settings, TrimmedMeanSettings)
+    assert salinity_settings.proportion_to_cut == 0.1
+    assert temperature_method == "winsorized_mean"
+    assert temperature_settings == WinsorizedMeanSettings(limits=0.3)
+    assert conservative_method == "biweight"
+    assert conservative_settings == BiweightSettings(c=5.0)
+
+
+def test_load_settings_rejects_invalid_bin_channel_override(
+    tmp_path,
+) -> None:
+    """A bad per-channel bin-method override raises."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n"
+        "[bin.channels.practical_salinity]\n"
+        'method = "not_a_real_method"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
 
 
 def test_channel_settings_output_dtype_defaults_none() -> None:

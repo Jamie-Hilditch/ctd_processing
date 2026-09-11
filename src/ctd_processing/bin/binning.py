@@ -3,10 +3,14 @@
 See `ctd_processing.config.BinSettings`. `bin_profile` bins a single
 already-extracted, already-processed profile `Dataset` (see
 `ctd_processing.process.process_profile`) along one of its channels
-(`BinSettings.channel`); `combine_binned_profiles` stacks the resulting
-per-profile `xarray.Dataset` objects into one combined dataset along a new
-``profile`` dimension. See `ctd_processing.bin.bin_deployment` for the
-orchestration that ties these together for a whole deployment's profiles.
+(`BinSettings.channel`), reducing every other channel within each bin per
+`BinSettings.method`/`BinSettings.channels` (see
+`ctd_processing.config.resolve_bin_method` and
+`ctd_processing.bin.robust`); `combine_binned_profiles` stacks the
+resulting per-profile `xarray.Dataset` objects into one combined dataset
+along a new ``profile`` dimension. See `ctd_processing.bin.bin_deployment`
+for the orchestration that ties these together for a whole deployment's
+profiles.
 """
 
 import logging
@@ -15,8 +19,9 @@ import numpy as np
 import numpy.typing as npt
 import xarray as xr
 
+from ctd_processing.bin.robust import reduce_bin
 from ctd_processing.cf_attrs import channel_attrs, sanitize_attr
-from ctd_processing.config import BinSettings
+from ctd_processing.config import BinSettings, resolve_bin_method
 from ctd_processing.process.dataset import Dataset
 
 logger = logging.getLogger(__name__)
@@ -136,15 +141,19 @@ def compute_bin_edges(
 
 
 def bin_profile(
-    dataset: Dataset, channel: str, edges: npt.NDArray
+    dataset: Dataset, settings: BinSettings, edges: npt.NDArray
 ) -> xr.Dataset:
-    """Bin one profile's channels onto `edges`, averaging within each bin.
+    """Bin one profile's channels onto `edges`, reducing within each bin.
 
-    Every channel except `channel` itself is averaged (NaN-aware) within
-    each bin via `xarray.Dataset.groupby_bins` (accelerated by `flox` when
-    installed), producing a data variable along a dimension named after
-    `channel`, whose coordinate is that bin's center. `channel` itself is
-    not included as a data variable -- the bin coordinate replaces it.
+    Every channel except `settings.channel` itself is grouped (NaN-aware)
+    within each bin via `xarray.DataArray.groupby_bins`, then reduced with
+    that channel's resolved bin-averaging method (see
+    `ctd_processing.config.resolve_bin_method`, `ctd_processing.bin.robust`)
+    -- `settings.method` by default, or that channel's override in
+    `settings.channels` -- producing a data variable along a dimension
+    named after `settings.channel`, whose coordinate is that bin's center.
+    `settings.channel` itself is not included as a data variable -- the
+    bin coordinate replaces it.
 
     `dataset.metadata`'s per-profile entries (`profile_start_time`,
     `profile_end_time`, `latitude`, `longitude` -- see
@@ -161,13 +170,14 @@ def bin_profile(
     ----------
     dataset : Dataset
         One already-extracted, already-processed profile. Not mutated.
-    channel : str
-        The channel key to bin by (see `BinSettings.channel`). Must be
-        present in `dataset.channels`.
+    settings : BinSettings
+        Supplies `channel` (the channel key to bin by; must be present
+        in `dataset.channels`) and the project-wide/per-channel
+        bin-averaging method settings.
     edges : numpy.typing.NDArray
         Bin edges, as returned by `compute_bin_edges`. May be increasing
         or decreasing; sorted ascending internally since
-        `xarray.Dataset.groupby_bins` requires monotonically increasing
+        `xarray.DataArray.groupby_bins` requires monotonically increasing
         bins. The resulting bin coordinate is always presented in
         ascending numeric order -- the configured direction only affects
         how `compute_bin_edges` derives `edges` from `step`/`first`/`last`,
@@ -176,13 +186,14 @@ def bin_profile(
     Returns
     -------
     xarray.Dataset
-        The binned profile, with dimension/coordinate `channel`.
+        The binned profile, with dimension/coordinate `settings.channel`.
 
     Raises
     ------
     ValueError
-        If `channel` is not present in `dataset.channels`.
+        If `settings.channel` is not present in `dataset.channels`.
     """
+    channel = settings.channel
     if channel not in dataset.channels:
         raise ValueError(
             f"Cannot bin by {channel!r}: dataset has no such channel."
@@ -192,25 +203,33 @@ def bin_profile(
     centers = (sorted_edges[:-1] + sorted_edges[1:]) / 2
 
     bin_channel = dataset.channels[channel]
-    data_vars = {
-        name: xr.DataArray(
-            other.data, dims=("obs",), attrs=channel_attrs(other)
-        )
-        for name, other in dataset.channels.items()
-        if name != channel
-    }
-    obs_dataset = xr.Dataset(
-        data_vars=data_vars, coords={channel: ("obs", bin_channel.data)}
-    )
+    bin_coord = {channel: ("obs", bin_channel.data)}
 
-    grouped = obs_dataset.groupby_bins(
-        channel,
-        bins=sorted_edges,
-        labels=centers,
-        right=True,
-        include_lowest=True,
-    )
-    binned = grouped.mean(skipna=True)
+    reduced = {}
+    for name, other in dataset.channels.items():
+        if name == channel:
+            continue
+        method, method_settings = resolve_bin_method(settings, name)
+        da = xr.DataArray(
+            other.data,
+            dims=("obs",),
+            attrs=channel_attrs(other),
+            coords=bin_coord,
+        )
+        grouped = da.groupby_bins(
+            channel,
+            bins=sorted_edges,
+            labels=centers,
+            right=True,
+            include_lowest=True,
+        )
+        reduced[name] = grouped.reduce(
+            lambda arr, axis=None, m=method, s=method_settings: reduce_bin(
+                arr, m, s
+            ),
+            dim="obs",
+        )
+    binned = xr.Dataset(reduced)
     binned = binned.rename({f"{channel}_bins": channel})
     binned = binned.reindex({channel: centers})
     binned[channel].attrs = dict(bin_channel.metadata)
