@@ -1,5 +1,7 @@
 """Tests for ctd_processing.config."""
 
+import datetime
+
 import pytest
 from pydantic import ValidationError
 
@@ -770,6 +772,104 @@ def test_process_atmospheric_pressure_can_be_overridden(tmp_path) -> None:
         + _other_paths(tmp_path)
     )
     assert settings.process.atmospheric_pressure == 10.05
+
+
+def test_process_start_end_time_default_to_none(tmp_path) -> None:
+    """process.start_time/end_time default to None (no restriction)."""
+    settings = load_settings(
+        set_=[f'paths.rsk_directory="{(tmp_path / "rsk").as_posix()}"']
+        + _other_paths(tmp_path)
+    )
+    assert settings.process.start_time is None
+    assert settings.process.end_time is None
+
+
+def test_process_start_end_time_parse_from_toml_datetime_literal(
+    tmp_path,
+) -> None:
+    """A bare TOML datetime literal parses into a naive datetime.datetime."""
+    config_path = tmp_path / "config.toml"
+    rsk_dir = tmp_path / "rsk"
+    profiles_dir = tmp_path / "profiles"
+    binned_dir = tmp_path / "binned"
+    config_path.write_text(
+        "[paths]\n"
+        f'rsk_directory = "{rsk_dir.as_posix()}"\n'
+        f'profiles_directory = "{profiles_dir.as_posix()}"\n'
+        f'binned_directory = "{binned_dir.as_posix()}"\n'
+        "[process]\n"
+        "start_time = 2026-01-01T00:00:00\n"
+        "end_time = 2026-01-02T00:00:00\n"
+        "[process.geolocation]\n"
+        "reference_latitude = 0.0\n"
+        "reference_longitude = 0.0\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path)
+
+    assert settings.process.start_time == datetime.datetime(2026, 1, 1)
+    assert settings.process.end_time == datetime.datetime(2026, 1, 2)
+
+
+def test_process_start_time_normalizes_timezone_aware_to_utc() -> None:
+    """A timezone-aware start_time/end_time is converted to naive UTC."""
+    tz = datetime.timezone(datetime.timedelta(hours=-5))
+    settings = ProcessSettings(
+        geolocation=_GEOLOCATION,
+        start_time=datetime.datetime(2026, 1, 1, 0, 0, tzinfo=tz),
+    )
+
+    assert settings.start_time == datetime.datetime(2026, 1, 1, 5, 0)
+    assert settings.start_time is not None
+    assert settings.start_time.tzinfo is None
+
+
+def test_process_settings_rejects_start_time_after_end_time() -> None:
+    """start_time must be strictly before end_time."""
+    with pytest.raises(ValidationError):
+        ProcessSettings(
+            geolocation=_GEOLOCATION,
+            start_time=datetime.datetime(2026, 1, 2),
+            end_time=datetime.datetime(2026, 1, 1),
+        )
+
+
+def test_process_settings_rejects_equal_start_and_end_time() -> None:
+    """start_time equal to end_time is also rejected (an empty window)."""
+    with pytest.raises(ValidationError):
+        ProcessSettings(
+            geolocation=_GEOLOCATION,
+            start_time=datetime.datetime(2026, 1, 1),
+            end_time=datetime.datetime(2026, 1, 1),
+        )
+
+
+def test_resolve_process_settings_applies_deployment_start_end_override() -> (
+    None
+):
+    """A deployment override sets start_time/end_time to exclude stale data."""
+    settings = Settings(
+        paths=PathsSettings(
+            rsk_directory="rsk",
+            profiles_directory="profiles",
+            binned_directory="binned",
+        ),
+        process=ProcessSettings(geolocation=_GEOLOCATION),
+        deployments={
+            "243188_20260809_0304": DeploymentSettings(
+                process={
+                    "start_time": datetime.datetime(2026, 8, 9),
+                    "end_time": datetime.datetime(2026, 8, 10),
+                }
+            )
+        },
+    )
+
+    resolved = resolve_process_settings(settings, stem="243188_20260809_0304")
+
+    assert resolved.start_time == datetime.datetime(2026, 8, 9)
+    assert resolved.end_time == datetime.datetime(2026, 8, 10)
 
 
 def test_process_profiles_defaults(tmp_path) -> None:

@@ -16,8 +16,6 @@ for a narrative walkthrough of how these modules fit together.
 
 ## Reading and building
 
-::: ctd_processing.process.read
-
 ::: ctd_processing.process.build
 
 ::: ctd_processing.process.cf_channels

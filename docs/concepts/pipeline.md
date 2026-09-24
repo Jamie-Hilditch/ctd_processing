@@ -27,40 +27,47 @@ deployments concurrently via a thread pool, since copying is I/O-bound.
 Each deployment then runs through
 [`process_deployment`](../api/process.md):
 
-1. **Read** — [`read_rsk`](../api/process.md) opens the `.rsk` file
-   read-only via `pyrsktools`.
-2. **Resolve settings** — the instrument's serial number
-   (`rsk.instrument.serialID`) and the deployment's filename stem resolve
-   the effective [`ProcessSettings`](../api/config.md) for this specific
-   deployment, applying any matching `[instruments.*]`/`[deployments.*]`
-   overrides (see
+1. **Open** — [`process_deployment`](../api/process.md) opens the `.rsk`
+   file read-only via `pyrsktools.RSK`, which reads only metadata
+   (`instrument`, `deployment`, `epoch`, `channels`) -- not yet any data
+   rows.
+2. **Resolve settings** — while the file is still open, the instrument's
+   serial number (`rsk.instrument.serialID`) and the deployment's filename
+   stem resolve the effective [`ProcessSettings`](../api/config.md) for
+   this specific deployment, applying any matching
+   `[instruments.*]`/`[deployments.*]` overrides (see
    [Configuration → per-instrument and per-deployment overrides](../configuration.md#per-instrument-and-per-deployment-overrides)).
-   This happens *before* building the dataset, so `read_channels` can
-   restrict which channels are even read from disk.
-3. **Build** — [`build_dataset`](../api/process.md) constructs a `Dataset`
-   from the opened `RSK`, mapping RBR channel `longName`s to CF metadata and
+3. **Read data** — `rsk.readdata` actually reads the data, bounded by
+   `start_time`/`end_time` if set -- excluding samples outside that
+   window from ever being read into memory at all, before the connection
+   is closed. This is how a redeployed instrument's leftover data from a
+   previous deployment gets excluded (see
+   [Configuration → `[process]`](../configuration.md#process)).
+4. **Build** — [`build_dataset`](../api/process.md) constructs a `Dataset`
+   from the read `RSK`, mapping RBR channel `longName`s to CF metadata and
    short storage keys via
-   [`cf_channels`](../api/process.md).
-4. **Raw channel corrections and despiking** —
+   [`cf_channels`](../api/process.md), restricted to `read_channels` if
+   set.
+5. **Raw channel corrections and despiking** —
    [`process_raw_channels`](../api/process.md) applies `remove_holds`,
    `shift`, and `offset` per `[process.raw_channels.<name>]`, then despikes
    any channel enabled in `[process.channels.<name>]`.
-5. **Sea pressure** — [`compute_sea_pressure`](../api/process.md) either
+6. **Sea pressure** — [`compute_sea_pressure`](../api/process.md) either
    trusts the dataset's existing `sea_pressure` channel or recomputes it
    from `absolute_pressure` minus `atmospheric_pressure`.
-6. **Profile identification** —
+7. **Profile identification** —
    [`find_profiles`](../api/process.md) identifies turnaround cycles from
    `sea_pressure` via `profinder` (both the downcast and upcast of every
    cycle, regardless of `direction`), and
    [`resolve_cast_slices`](../api/process.md) selects the cast(s)
    `[process.profiles].direction` configures to be written out — never
    including the dwell between a cycle's downcast and upcast.
-7. **CT lag** — if `[process.ct_lag].enabled`,
+8. **CT lag** — if `[process.ct_lag].enabled`,
    [`process_ct_lag`](../api/process.md) grid-searches a single
    conductivity/temperature sample shift for the whole deployment,
    evaluated only over the resolved cast slices, to minimize salinity
    spiking.
-8. **Per-profile processing** — every resolved cast is extracted
+9. **Per-profile processing** — every resolved cast is extracted
    (`Dataset.subset`) into its own profile `Dataset`, then all of them are
    processed together, not one at a time:
       - [`attach_geolocation_to_profiles`](../api/process.md) attaches
@@ -75,10 +82,10 @@ Each deployment then runs through
         across every profile in the deployment for a more stable fit (see
         [Despiking](despiking.md)), which is why this runs on the whole
         list of profiles at once rather than profile-by-profile.
-9. **Save** — [`save_profile`](../api/process.md) writes each processed
-   profile to `paths.profiles_directory`, in `profile_format` (`"parquet"`
-   or `"netcdf"`; see [`save_parquet`](../api/process.md) /
-   [`save_netcdf`](../api/process.md)).
+10. **Save** — [`save_profile`](../api/process.md) writes each processed
+    profile to `paths.profiles_directory`, in `profile_format` (`"parquet"`
+    or `"netcdf"`; see [`save_parquet`](../api/process.md) /
+    [`save_netcdf`](../api/process.md)).
 
 ## `bin`: profiles → one deployment dataset
 

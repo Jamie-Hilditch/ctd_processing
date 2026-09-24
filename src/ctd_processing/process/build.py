@@ -1,5 +1,6 @@
 """Build a `Dataset` out of an opened `pyrsktools.RSK`."""
 
+import datetime
 import logging
 from pathlib import Path
 
@@ -47,6 +48,8 @@ def build_dataset(
     file: Path,
     project: ProjectSettings,
     read_channels: list[str] | None = None,
+    start_time: datetime.datetime | None = None,
+    end_time: datetime.datetime | None = None,
 ) -> Dataset:
     """Build a `Dataset` from an opened, read `pyrsktools.RSK`.
 
@@ -59,10 +62,10 @@ def build_dataset(
     Parameters
     ----------
     rsk : pyrsktools.RSK
-        The dataset to read, as returned by
-        `ctd_processing.process.read.read_rsk`. Must already have had
-        `readdata` called (as `read_rsk` does), so that `instrument`,
-        `epoch`, and `deployment` are populated.
+        The dataset to read. Must already have had `RSK.open()` and
+        `readdata()` called (as `ctd_processing.process.process_deployment`
+        does inline), so that `instrument`, `epoch`, and `deployment` are
+        populated.
     file : pathlib.Path
         The `.rsk` file `rsk` was read from, recorded in `metadata` for
         provenance.
@@ -76,6 +79,13 @@ def build_dataset(
         key (see `ctd_processing.config.ProcessSettings.read_channels`).
         Optional; if ``None`` or empty (the default), every channel with
         data present in this schedule is extracted, as before.
+    start_time, end_time : datetime.datetime or None, optional
+        The bounds (see `ctd_processing.config.ProcessSettings.start_time`/
+        `end_time`) `rsk`'s `readdata` was actually called with, if any --
+        recorded into `metadata` as `read_start_time`/`read_end_time` for
+        provenance, purely for recording; `rsk.data` is trusted to already
+        reflect them. Optional; defaults to ``None`` (no restriction was
+        applied).
 
     Returns
     -------
@@ -90,14 +100,14 @@ def build_dataset(
     ------
     ValueError
         If `rsk.instrument`, `rsk.epoch`, or `rsk.deployment` is ``None``
-        (i.e. `rsk` was not read via `read_rsk` first), or if
-        `read_channels` names a channel not found among `rsk.channels`
-        with data present in this schedule.
+        (i.e. `rsk` was not opened and read first), or if `read_channels`
+        names a channel not found among `rsk.channels` with data present
+        in this schedule.
     """
     if rsk.instrument is None or rsk.epoch is None or rsk.deployment is None:
         raise ValueError(
             "rsk is missing instrument/epoch/deployment metadata; "
-            "read it with read_rsk first."
+            "call RSK.open() and readdata() first."
         )
 
     time = Channel(data=rsk.data["timestamp"])
@@ -113,6 +123,8 @@ def build_dataset(
             "deployment_comment": rsk.deployment.comment,
             "project_name": project.name,
             "sampling_period_seconds": _sampling_period_seconds(rsk),
+            "read_start_time": start_time,
+            "read_end_time": end_time,
         }
     )
     dataset.record(f"read from {file}")

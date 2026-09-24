@@ -47,6 +47,11 @@ Settings for the `process` command — see
 
 - **`read_channels`** restricts which RBR channels are extracted from the
   `.rsk` file at all. Defaults to every channel present.
+- **`start_time`**/**`end_time`** restrict which samples are read at all,
+  via `pyrsktools.RSK.readdata`'s time bounds — see
+  [Per-instrument and per-deployment overrides](#per-instrument-and-per-deployment-overrides)
+  below for the main use case: excluding a redeployed instrument's
+  leftover data from a previous deployment. Unset by default (no bound).
 - **`atmospheric_pressure`**, if set, forces `sea_pressure` to be
   recomputed from `absolute_pressure`; left unset, the dataset's own
   `sea_pressure` channel is trusted.
@@ -175,6 +180,13 @@ shift = 2
 [deployments.243188_20260809_0304.process]
 atmospheric_pressure = 10.1325
 ```
+
+A `[deployments.<stem>.process]` override of `start_time`/`end_time` is
+the main tool for a common field problem: an instrument redeployed
+without being wiped first still has its previous deployment's samples at
+the start of its next `.rsk` file. Since the override is keyed by that
+one file's own filename stem, setting `start_time` there excludes exactly
+that deployment's stale data, without touching any other deployment.
 
 ## Overrides
 

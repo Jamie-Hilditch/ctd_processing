@@ -1,5 +1,6 @@
 """Configuration model and loading utilities for ctd_processing."""
 
+import datetime
 import tomllib
 from pathlib import Path
 from typing import Any, Literal
@@ -901,6 +902,24 @@ class ProcessSettings(BaseModel):
         logged in this schedule -- that is an error, not a silent skip.
         Defaults to an empty list, meaning every channel with data
         present is extracted (the unfiltered default).
+    start_time : datetime.datetime or None
+        If set, only samples at or after this time are read from the
+        ``.rsk`` file -- applied via `pyrsktools.RSK.readdata`'s ``t1``
+        directly, so an excluded sample is never read into memory at
+        all. A naive (timezone-unaware) value is assumed to already be
+        the instrument's own clock (RBR logs in UTC); a timezone-aware
+        value is converted to naive UTC. Optional; defaults to ``None``,
+        meaning no lower bound. Set project-wide (``[process]``) to bound
+        an entire cruise, or per deployment
+        (``[deployments.<stem>.process]``) to exclude one specific
+        ``.rsk`` file's leftover data from a previous deployment that
+        wasn't wiped before the instrument was redeployed and recorded
+        over it -- the deployment override is keyed by filename stem, so
+        it targets exactly the file with the problem.
+    end_time : datetime.datetime or None
+        As `start_time`, but an upper bound: only samples at or before
+        this time are read. Optional; defaults to ``None``, meaning no
+        upper bound. Must be strictly after `start_time` if both are set.
     raw_channels : dict[str, RawChannelSettings]
         Per-raw-channel processing settings, keyed by
         `ctd_processing.process.cf_channels.channel_key_for_longname`'s
@@ -987,6 +1006,8 @@ class ProcessSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     read_channels: list[str] = Field(default_factory=list)
+    start_time: datetime.datetime | None = None
+    end_time: datetime.datetime | None = None
     raw_channels: dict[str, RawChannelSettings] = Field(default_factory=dict)
     atmospheric_pressure: float | None = None
     profiles: ProfileSettings = Field(default_factory=ProfileSettings)
@@ -1012,6 +1033,30 @@ class ProcessSettings(BaseModel):
         """Require `output_dtype` to be a floating numpy dtype."""
         _check_output_dtype(value)
         return value
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def _normalize_to_naive_utc(
+        cls, value: datetime.datetime | None
+    ) -> datetime.datetime | None:
+        """Convert a timezone-aware datetime to naive UTC; leave naive as-is."""
+        if value is not None and value.tzinfo is not None:
+            value = value.astimezone(datetime.UTC).replace(tzinfo=None)
+        return value
+
+    @model_validator(mode="after")
+    def _validate_time_range(self) -> "ProcessSettings":
+        """Require `start_time` to be strictly before `end_time`."""
+        if (
+            self.start_time is not None
+            and self.end_time is not None
+            and self.start_time >= self.end_time
+        ):
+            raise ValueError(
+                f"start_time ({self.start_time}) must be before end_time "
+                f"({self.end_time})."
+            )
+        return self
 
 
 BinMethod = Literal[

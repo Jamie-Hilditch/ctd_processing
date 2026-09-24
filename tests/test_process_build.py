@@ -1,14 +1,27 @@
 """Tests for ctd_processing.process.build."""
 
+import datetime
 from pathlib import Path
 
 import numpy as np
+import pyrsktools
 import pytest
 
 from ctd_processing.config import ProjectSettings
 from ctd_processing.logging_utils import VERBOSE
 from ctd_processing.process.build import build_dataset
-from ctd_processing.process.read import read_rsk
+
+
+def _read_rsk(file: Path) -> pyrsktools.RSK:
+    """Open and fully read a real `.rsk` file for testing `build_dataset`.
+
+    Test-only convenience -- `ctd_processing.process.process_deployment`
+    does its own inline open/resolve-settings/read sequence instead of a
+    one-shot helper, since it needs to resolve settings in between.
+    """
+    with pyrsktools.RSK(str(file)) as rsk:
+        rsk.readdata()
+    return rsk
 
 
 @pytest.mark.requires_example_data
@@ -16,7 +29,7 @@ def test_build_dataset_time_channel_matches_rsk(
     example_rsk_path: Path,
 ) -> None:
     """The Dataset's time channel matches rsk.data['timestamp']."""
-    rsk = read_rsk(example_rsk_path)
+    rsk = _read_rsk(example_rsk_path)
 
     dataset = build_dataset(rsk, example_rsk_path, ProjectSettings())
 
@@ -29,7 +42,7 @@ def test_build_dataset_metadata_from_instrument_and_project(
     example_rsk_path: Path,
 ) -> None:
     """Dataset metadata pulls instrument/deployment/project info."""
-    rsk = read_rsk(example_rsk_path)
+    rsk = _read_rsk(example_rsk_path)
     assert rsk.instrument is not None
     assert rsk.epoch is not None
     project = ProjectSettings(name="test-cruise")
@@ -61,7 +74,7 @@ def test_build_dataset_keys_channels_by_long_name_slug(
     "sea_water_pressure") coincides with its standard_name -- checking
     both demonstrates the key really comes from long_name.
     """
-    rsk = read_rsk(example_rsk_path)
+    rsk = _read_rsk(example_rsk_path)
 
     dataset = build_dataset(rsk, example_rsk_path, ProjectSettings())
 
@@ -89,7 +102,7 @@ def test_build_dataset_covers_every_data_channel(
     example_rsk_path: Path,
 ) -> None:
     """Every rsk.channels entry with a matching data column is included."""
-    rsk = read_rsk(example_rsk_path)
+    rsk = _read_rsk(example_rsk_path)
     data_field_names = rsk.data.dtype.names or ()
 
     dataset = build_dataset(rsk, example_rsk_path, ProjectSettings())
@@ -112,7 +125,7 @@ def test_build_dataset_covers_every_data_channel_for_fluorometer_instrument(
 
     No sea_pressure, has backscatter/chlorophyll/cdom, no oxygen channel.
     """
-    rsk = read_rsk(example_rsk_path_fluorometer)
+    rsk = _read_rsk(example_rsk_path_fluorometer)
     data_field_names = rsk.data.dtype.names or ()
 
     dataset = build_dataset(
@@ -134,7 +147,7 @@ def test_build_dataset_covers_every_data_channel_for_oxygen_instrument(
     example_rsk_path_oxygen: Path,
 ) -> None:
     """build_dataset also covers a third instrument, with real oxygen data."""
-    rsk = read_rsk(example_rsk_path_oxygen)
+    rsk = _read_rsk(example_rsk_path_oxygen)
     data_field_names = rsk.data.dtype.names or ()
 
     dataset = build_dataset(rsk, example_rsk_path_oxygen, ProjectSettings())
@@ -160,7 +173,7 @@ def test_build_dataset_maps_dissolved_oxygen_saturation_channel(
     "dissolved_oxygen_saturation", not "dissolved_o2_saturation" -- that
     raw identifier survives only as `source_channel_name`.
     """
-    rsk = read_rsk(example_rsk_path_oxygen)
+    rsk = _read_rsk(example_rsk_path_oxygen)
 
     dataset = build_dataset(rsk, example_rsk_path_oxygen, ProjectSettings())
 
@@ -179,7 +192,7 @@ def test_build_dataset_logs_at_verbose_level(
     example_rsk_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """build_dataset logs the read and each add_channel at VERBOSE."""
-    rsk = read_rsk(example_rsk_path)
+    rsk = _read_rsk(example_rsk_path)
     caplog.set_level(VERBOSE, logger="ctd_processing.process.build")
 
     build_dataset(rsk, example_rsk_path, ProjectSettings())
@@ -203,7 +216,7 @@ def test_build_dataset_read_channels_restricts_extraction(
     channel, stored under its derived key "electrical_conductivity" --
     proving filtering happens against longName, not the key itself.
     """
-    rsk = read_rsk(example_rsk_path)
+    rsk = _read_rsk(example_rsk_path)
 
     dataset = build_dataset(
         rsk, example_rsk_path, ProjectSettings(), ["conductivity"]
@@ -217,7 +230,7 @@ def test_build_dataset_read_channels_rejects_derived_key(
     example_rsk_path: Path,
 ) -> None:
     """The derived key is not itself a valid read_channels entry."""
-    rsk = read_rsk(example_rsk_path)
+    rsk = _read_rsk(example_rsk_path)
 
     with pytest.raises(ValueError, match="electrical_conductivity"):
         build_dataset(
@@ -233,7 +246,7 @@ def test_build_dataset_read_channels_none_or_empty_extracts_everything(
     example_rsk_path: Path,
 ) -> None:
     """read_channels=None and read_channels=[] both mean "no filter"."""
-    rsk = read_rsk(example_rsk_path)
+    rsk = _read_rsk(example_rsk_path)
 
     unfiltered = build_dataset(rsk, example_rsk_path, ProjectSettings())
     explicit_empty = build_dataset(rsk, example_rsk_path, ProjectSettings(), [])
@@ -247,7 +260,7 @@ def test_build_dataset_read_channels_unknown_key_raises(
     example_rsk_path: Path,
 ) -> None:
     """A read_channels entry never matched by any real channel is an error."""
-    rsk = read_rsk(example_rsk_path)
+    rsk = _read_rsk(example_rsk_path)
 
     with pytest.raises(ValueError, match="not_a_real_channel"):
         build_dataset(
@@ -256,3 +269,33 @@ def test_build_dataset_read_channels_unknown_key_raises(
             ProjectSettings(),
             ["temperature", "not_a_real_channel"],
         )
+
+
+@pytest.mark.requires_example_data
+def test_build_dataset_records_read_start_end_time_when_given(
+    example_rsk_path: Path,
+) -> None:
+    """start_time/end_time, if passed, are recorded into metadata."""
+    rsk = _read_rsk(example_rsk_path)
+    start = datetime.datetime(2026, 1, 1)
+    end = datetime.datetime(2026, 1, 2)
+
+    dataset = build_dataset(
+        rsk, example_rsk_path, ProjectSettings(), None, start, end
+    )
+
+    assert dataset.metadata["read_start_time"] == start
+    assert dataset.metadata["read_end_time"] == end
+
+
+@pytest.mark.requires_example_data
+def test_build_dataset_read_start_end_time_default_to_none(
+    example_rsk_path: Path,
+) -> None:
+    """Without start_time/end_time, the metadata records None for both."""
+    rsk = _read_rsk(example_rsk_path)
+
+    dataset = build_dataset(rsk, example_rsk_path, ProjectSettings())
+
+    assert dataset.metadata["read_start_time"] is None
+    assert dataset.metadata["read_end_time"] is None

@@ -16,6 +16,8 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import numpy as np
+import pyrsktools
 import xarray as xr
 
 from ctd_processing.config import (
@@ -30,7 +32,6 @@ from ctd_processing.process.derived_variables import compute_derived_variables
 from ctd_processing.process.geolocation import attach_geolocation_to_profiles
 from ctd_processing.process.profiles import find_profiles, resolve_cast_slices
 from ctd_processing.process.raw_channels import process_raw_channels
-from ctd_processing.process.read import read_rsk
 from ctd_processing.process.save import save_profile
 from ctd_processing.process.sea_pressure import compute_sea_pressure
 
@@ -46,14 +47,19 @@ def process_deployment(
 ) -> None:
     """Process one ``.rsk`` deployment into extracted profile files.
 
-    Reads the deployment, then resolves the effective `ProcessSettings`
-    for it -- an instrument's serial number is read directly off
-    `rsk.instrument.serialID` (never inferred from a filename), so
-    settings resolution can happen here, before `build_dataset`, rather
-    than after (see :func:`ctd_processing.config.resolve_process_settings`).
-    This ordering is what lets `process_settings.read_channels` restrict
-    which channels `build_dataset` extracts in the first place, rather
-    than pruning them afterward. It also resolves
+    Opens the deployment via `pyrsktools.RSK`, but does not read its data
+    yet -- `RSK.open()` alone already populates `instrument`/`deployment`/
+    `epoch`/`channels`, including the instrument's serial number, off
+    `rsk.instrument.serialID` (never inferred from a filename). That's
+    enough to resolve the effective `ProcessSettings` for this deployment
+    while the file is still open
+    (see :func:`ctd_processing.config.resolve_process_settings`), so
+    `process_settings.start_time`/`end_time` can then bound `rsk.readdata`
+    itself -- excluding samples outside that window from ever being read
+    into memory at all, rather than reading everything and pruning
+    afterward. This is also what lets `process_settings.read_channels`
+    restrict which channels `build_dataset` extracts once the data is
+    read. It also resolves
     `process_settings.despiking`/`process_settings.channels` into a flat,
     per-channel mapping once
     (see :func:`ctd_processing.config.resolve_despike_settings`), reused
@@ -114,15 +120,42 @@ def process_deployment(
         supply `settings.project` metadata.
     """
     logger.info("Reading deployment: %s", file)
-    rsk = read_rsk(file)
-    process_settings = resolve_process_settings(
-        settings,
-        serial_number=str(rsk.instrument.serialID),  # ty: ignore
-        stem=file.stem,
-    )
+    with pyrsktools.RSK(str(file)) as rsk:
+        logger.debug("Opening RSK file: %s", file)
+        process_settings = resolve_process_settings(
+            settings,
+            serial_number=str(rsk.instrument.serialID),  # ty: ignore
+            stem=file.stem,
+        )
+        if (
+            process_settings.start_time is not None
+            or process_settings.end_time is not None
+        ):
+            logger.info(
+                "Restricting %s to time range [%s, %s]",
+                file,
+                process_settings.start_time,
+                process_settings.end_time,
+            )
+        t1 = (
+            np.datetime64(process_settings.start_time)
+            if process_settings.start_time is not None
+            else None
+        )
+        t2 = (
+            np.datetime64(process_settings.end_time)
+            if process_settings.end_time is not None
+            else None
+        )
+        rsk.readdata(t1, t2)
     despike = resolve_despike_settings(process_settings)
     dataset = build_dataset(
-        rsk, file, settings.project, process_settings.read_channels
+        rsk,
+        file,
+        settings.project,
+        process_settings.read_channels,
+        process_settings.start_time,
+        process_settings.end_time,
     )
     dataset = process_raw_channels(dataset, process_settings, despike)
     dataset = compute_sea_pressure(

@@ -1,5 +1,6 @@
 """Tests for ctd_processing.process."""
 
+import datetime
 import json
 import logging
 from pathlib import Path
@@ -121,7 +122,7 @@ def test_process_deployment_applies_raw_channel_processing(
 
     The example file's temperature channel has known zero-order holds
     (verified in earlier work), so a VERBOSE record from `remove_holds`
-    appearing here proves the full read_rsk -> build_dataset ->
+    appearing here proves the full open -> readdata -> build_dataset ->
     process_raw_channels chain actually ran.
     """
     caplog.set_level(VERBOSE, logger="ctd_processing.process.raw_channels")
@@ -275,29 +276,109 @@ def test_process_deployment_computes_oxygen_concentration_from_saturation(
     assert np.isfinite(oxygen.data).any()
 
 
+@pytest.mark.requires_example_data
+def test_process_deployment_start_end_time_restricts_real_data(
+    tmp_path: Path, example_rsk_path: Path
+) -> None:
+    """A deployment start_time/end_time override restricts what's read.
+
+    Runs process_deployment once unrestricted to learn the deployment's
+    real time span from its (unaffected-by-restriction) `deployment_start_time`/
+    `deployment_end_time` metadata, then again with a start_time/end_time
+    deployment override narrowing that span to its middle half, and
+    confirms the restricted run's profile data actually stays within it --
+    the one place this exercises `pyrsktools.RSK.readdata(t1, t2)` against
+    a real file end-to-end.
+    """
+    unrestricted_dir = tmp_path / "unrestricted"
+    process_deployment(example_rsk_path, unrestricted_dir, _settings(tmp_path))
+    unrestricted_files = sorted(unrestricted_dir.rglob("*.parquet"))
+    assert unrestricted_files
+    full = load_profile(unrestricted_files[0])
+    full_start = np.datetime64(full.metadata["deployment_start_time"])
+    full_end = np.datetime64(full.metadata["deployment_end_time"])
+    span = full_end - full_start
+    start = (full_start + span // 4).astype("datetime64[ms]").item()
+    end = (full_end - span // 4).astype("datetime64[ms]").item()
+    assert start < end
+
+    restricted_dir = tmp_path / "restricted"
+    settings = _settings(
+        tmp_path,
+        deployments={
+            example_rsk_path.stem: DeploymentSettings(
+                process={"start_time": start, "end_time": end}
+            )
+        },
+    )
+
+    process_deployment(example_rsk_path, restricted_dir, settings)
+
+    restricted_files = sorted(restricted_dir.rglob("*.parquet"))
+    assert restricted_files
+    for path in restricted_files:
+        restricted = load_profile(path)
+        assert restricted.metadata["read_start_time"] is not None
+        assert restricted.metadata["read_end_time"] is not None
+        assert restricted.time.data.min() >= np.datetime64(start)
+        assert restricted.time.data.max() <= np.datetime64(end)
+    assert len(restricted_files) <= len(unrestricted_files)
+
+
+class _FakeRSK:
+    """A minimal stand-in for `pyrsktools.RSK`.
+
+    Supports the context-manager protocol and the two members
+    `process_deployment` actually touches directly (`instrument.serialID`
+    and `readdata`), so tests don't need a real ``.rsk`` file.
+    """
+
+    def __init__(
+        self, filename: str, serial_number: str, readdata_calls: list[tuple]
+    ) -> None:
+        self.instrument = SimpleNamespace(serialID=serial_number)
+        self._readdata_calls = readdata_calls
+
+    def __enter__(self) -> "_FakeRSK":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+    def readdata(self, t1: object = None, t2: object = None) -> None:
+        self._readdata_calls.append((t1, t2))
+
+
 def _stub_pipeline(monkeypatch: pytest.MonkeyPatch, serial_number: str) -> dict:
-    """Stub read_rsk/build_dataset/... so process_deployment needs no real .rsk.
+    """Stub pyrsktools.RSK/build_dataset/... so no real .rsk file is needed.
 
     Returns a dict that `captured["process_settings"]` is filled with once
-    `process_deployment` calls the (stubbed) `process_raw_channels`, so
-    tests can inspect exactly which resolved `ProcessSettings` reached it.
-    `find_profiles` returns an empty list by default, so the profile loop
-    itself never executes -- tests that need it to should override
-    `find_profiles`/`build_dataset` after calling this.
+    `process_deployment` calls the (stubbed) `process_raw_channels`, and
+    `captured["readdata_calls"]` with every `(t1, t2)` pair the fake RSK's
+    `readdata` was called with, so tests can inspect exactly which resolved
+    `ProcessSettings` reached it. `find_profiles` returns an empty list by
+    default, so the profile loop itself never executes -- tests that need
+    it to should override `find_profiles`/`build_dataset` after calling
+    this.
     """
-    captured: dict = {}
+    captured: dict = {"readdata_calls": []}
 
-    fake_rsk = SimpleNamespace(
-        instrument=SimpleNamespace(serialID=serial_number)
-    )
-    monkeypatch.setattr(process_module, "read_rsk", lambda file: fake_rsk)
     monkeypatch.setattr(
-        process_module,
-        "build_dataset",
-        lambda rsk, file, project, read_channels=None: SimpleNamespace(
-            metadata={"instrument_serial_number": serial_number}
+        process_module.pyrsktools,
+        "RSK",
+        lambda filename: _FakeRSK(
+            filename, serial_number, captured["readdata_calls"]
         ),
     )
+
+    def fake_build_dataset(
+        rsk, file, project, read_channels=None, start_time=None, end_time=None
+    ):
+        return SimpleNamespace(
+            metadata={"instrument_serial_number": serial_number}
+        )
+
+    monkeypatch.setattr(process_module, "build_dataset", fake_build_dataset)
 
     def fake_process_raw_channels(dataset, settings, despike=None):
         captured["process_settings"] = settings
@@ -493,17 +574,61 @@ def test_process_deployment_applies_despike_channel_override(
     }
 
 
+def test_process_deployment_applies_start_end_time_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deployment start_time/end_time override reaches RSK.readdata."""
+    captured = _stub_pipeline(monkeypatch, serial_number="208532")
+    start = datetime.datetime(2026, 8, 9)
+    end = datetime.datetime(2026, 8, 10)
+    settings = _settings(
+        tmp_path,
+        deployments={
+            "243188_20260809_0304": DeploymentSettings(
+                process={"start_time": start, "end_time": end}
+            )
+        },
+    )
+
+    process_deployment(
+        tmp_path / "rsk" / "243188_20260809_0304.rsk",
+        tmp_path / "profiles",
+        settings,
+    )
+
+    assert captured["readdata_calls"] == [
+        (np.datetime64(start), np.datetime64(end))
+    ]
+
+
+def test_process_deployment_without_start_end_time_reads_unbounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no start_time/end_time set, readdata is called with (None, None)."""
+    captured = _stub_pipeline(monkeypatch, serial_number="208532")
+
+    process_deployment(
+        tmp_path / "rsk" / "243188_20260809_0304.rsk",
+        tmp_path / "profiles",
+        _settings(tmp_path),
+    )
+
+    assert captured["readdata_calls"] == [(None, None)]
+
+
 def test_process_deployment_calls_derived_variables_then_save_per_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Extracts every cast, derives variables once, then saves each profile."""
     _stub_pipeline(monkeypatch, serial_number="208532")
     dataset = _real_deployment_dataset(10)
-    monkeypatch.setattr(
-        process_module,
-        "build_dataset",
-        lambda rsk, file, project, read_channels=None: dataset,
-    )
+
+    def fake_build_dataset(
+        rsk, file, project, read_channels=None, start_time=None, end_time=None
+    ):
+        return dataset
+
+    monkeypatch.setattr(process_module, "build_dataset", fake_build_dataset)
     profiles = _two_profiles(10)
     monkeypatch.setattr(
         process_module, "find_profiles", lambda dataset, settings: profiles
@@ -555,11 +680,13 @@ def test_process_deployment_direction_both_splits_into_two_profiles(
     """
     _stub_pipeline(monkeypatch, serial_number="208532")
     dataset = _real_deployment_dataset(12)
-    monkeypatch.setattr(
-        process_module,
-        "build_dataset",
-        lambda rsk, file, project, read_channels=None: dataset,
-    )
+
+    def fake_build_dataset(
+        rsk, file, project, read_channels=None, start_time=None, end_time=None
+    ):
+        return dataset
+
+    monkeypatch.setattr(process_module, "build_dataset", fake_build_dataset)
     profile = Profile(down_start=0, down_end=4, up_start=6, up_end=10)
     monkeypatch.setattr(
         process_module, "find_profiles", lambda dataset, settings: [profile]
@@ -610,11 +737,13 @@ def test_process_deployment_passes_resolved_spans_to_ct_lag(
     """
     _stub_pipeline(monkeypatch, serial_number="208532")
     dataset = _real_deployment_dataset(12)
-    monkeypatch.setattr(
-        process_module,
-        "build_dataset",
-        lambda rsk, file, project, read_channels=None: dataset,
-    )
+
+    def fake_build_dataset(
+        rsk, file, project, read_channels=None, start_time=None, end_time=None
+    ):
+        return dataset
+
+    monkeypatch.setattr(process_module, "build_dataset", fake_build_dataset)
     profile = Profile(down_start=0, down_end=4, up_start=6, up_end=10)
     monkeypatch.setattr(
         process_module, "find_profiles", lambda dataset, settings: [profile]
@@ -645,11 +774,13 @@ def test_process_deployment_opens_external_geolocation_dataset_once(
     """The external geolocation dataset is opened once per deployment."""
     _stub_pipeline(monkeypatch, serial_number="208532")
     dataset = _real_deployment_dataset(10)
-    monkeypatch.setattr(
-        process_module,
-        "build_dataset",
-        lambda rsk, file, project, read_channels=None: dataset,
-    )
+
+    def fake_build_dataset(
+        rsk, file, project, read_channels=None, start_time=None, end_time=None
+    ):
+        return dataset
+
+    monkeypatch.setattr(process_module, "build_dataset", fake_build_dataset)
     monkeypatch.setattr(
         process_module,
         "find_profiles",
@@ -697,11 +828,13 @@ def test_process_deployment_attaches_geolocation_before_derived_variables(
     """process_deployment geolocates every profile before deriving variables."""
     _stub_pipeline(monkeypatch, serial_number="208532")
     dataset = _real_deployment_dataset(10)
-    monkeypatch.setattr(
-        process_module,
-        "build_dataset",
-        lambda rsk, file, project, read_channels=None: dataset,
-    )
+
+    def fake_build_dataset(
+        rsk, file, project, read_channels=None, start_time=None, end_time=None
+    ):
+        return dataset
+
+    monkeypatch.setattr(process_module, "build_dataset", fake_build_dataset)
     monkeypatch.setattr(
         process_module,
         "find_profiles",

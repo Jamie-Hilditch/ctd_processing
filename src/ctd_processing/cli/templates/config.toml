@@ -80,6 +80,20 @@
 # [process]
 # read_channels = ["temperature", "conductivity", "sea_pressure"]
 
+# start_time, end_time (optional, default: unset): restrict the deployment
+# to samples at or after start_time and/or at or before end_time --
+# applied via pyrsktools.RSK.readdata's t1/t2, so an excluded sample is
+# never read into memory at all. A naive (no timezone offset) value is
+# assumed to already be the instrument's own clock (RBR logs in UTC); a
+# value with an offset is converted to naive UTC. end_time must be
+# strictly after start_time if both are set. Set here to bound an entire
+# cruise, or per deployment in [deployments.<stem>.process] below to
+# exclude one specific .rsk file's leftover data -- e.g. from an
+# instrument that was redeployed without being wiped first, so its next
+# .rsk file still starts with the previous deployment's samples.
+# start_time = 2026-08-09T03:00:00
+# end_time = 2026-08-09T12:00:00
+
 # [process.raw_channels.<name>] sections are optional and configure
 # per-channel processing of the *raw* channels built from a deployment's
 # .rsk data. <name> is the short identifier a channel is stored under in
@@ -703,3 +717,11 @@
 #
 # [deployments.243188_20260809_0304.process]
 # atmospheric_pressure = 10.1325
+#
+# start_time/end_time overrides are the real power of a per-deployment
+# override: if this instrument was redeployed without being wiped first,
+# 243188_20260809_0304.rsk still starts with samples left over from the
+# *previous* deployment -- setting start_time here to (just after) this
+# deployment's own real start excludes that stale data, without affecting
+# any other deployment's file.
+# start_time = 2026-08-09T03:00:00
