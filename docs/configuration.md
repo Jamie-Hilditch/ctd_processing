@@ -119,19 +119,14 @@ and `oxygen_concentration` are opt-in.
 
 ### Despiking
 
-`[process.despiking]` sets the project-wide rolling-median despike
-defaults: `reference_window_length` for the reference series, and
-`rejection_method` for how the rejection threshold is resolved --
-`"gpd_percentile"` (the default) fits a Generalized Pareto Distribution to
-the residual's tail via peaks-over-threshold (`fit_percentile`,
-`rejection_percentile`, `min_exceedances`), rather than assuming the
-residual is Gaussian; `"raw_percentile"` and `"absolute_threshold"` skip
-the fit entirely for users manually tuning despiking — see
-[`DespikeSettings`](api/config.md). A single detect-and-replace pass, no
-repeat/iterate option. These are only defaults: a channel is only actually
-despiked if enabled per-channel below; for derived channels (e.g.
-`practical_salinity`), the rejection threshold is fit once, pooled across
-every cast in the deployment.
+`[process.despiking]` sets the project-wide despike defaults:
+`reference_window_length` for the rolling-median reference series, and
+`rejection_method` (`"gpd_percentile"` by default, or `"raw_percentile"`/
+`"absolute_threshold"`) for how a point's rejection threshold is resolved
+— see [Despiking](concepts/despiking.md) for how the algorithm works and
+how to tune it, or [`DespikeSettings`](api/config.md) for the full field
+reference. These are only defaults: a channel is only actually despiked if
+enabled per-channel below.
 
 ### Per-channel output settings
 

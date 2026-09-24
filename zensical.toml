@@ -21,6 +21,7 @@ nav = [
   ] },
   { "Concepts" = [
     "concepts/pipeline.md",
+    "concepts/despiking.md",
   ] },
   { "API reference" = [
     "api/config.md",

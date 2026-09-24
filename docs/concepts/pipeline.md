@@ -71,11 +71,10 @@ Each deployment then runs through
         quantity at a time across every profile in the deployment,
         despiking any newly derived channel that's enabled for it
         immediately after it's computed and before it feeds the next
-        quantity in the chain. Despiking a derived channel pools its
-        rejection-threshold fit across every profile in the deployment
-        (see [Despiking](../configuration.md#despiking)), which is why
-        this runs on the whole list of profiles at once rather than
-        profile-by-profile.
+        quantity in the chain — pooling the rejection-threshold fit
+        across every profile in the deployment for a more stable fit (see
+        [Despiking](despiking.md)), which is why this runs on the whole
+        list of profiles at once rather than profile-by-profile.
 9. **Save** — [`save_profile`](../api/process.md) writes each processed
    profile to `paths.profiles_directory`, in `profile_format` (`"parquet"`
    or `"netcdf"`; see [`save_parquet`](../api/process.md) /
