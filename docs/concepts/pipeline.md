@@ -60,15 +60,22 @@ Each deployment then runs through
    conductivity/temperature sample shift for the whole deployment,
    evaluated only over the resolved cast slices, to minimize salinity
    spiking.
-8. **Per-profile processing** — each resolved cast is extracted
-   (`Dataset.subset`) and passed through
-   [`process_profile`](../api/process.md):
-      - [`attach_geolocation`](../api/process.md) attaches the profile's
-        canonical start/end time and a `latitude`/`longitude` position,
-        per `[process.geolocation]`.
+8. **Per-profile processing** — every resolved cast is extracted
+   (`Dataset.subset`) into its own profile `Dataset`, then all of them are
+   processed together, not one at a time:
+      - [`attach_geolocation_to_profiles`](../api/process.md) attaches
+        each profile's canonical start/end time and a
+        `latitude`/`longitude` position, per `[process.geolocation]`.
       - [`compute_derived_variables`](../api/process.md) computes the
-        TEOS-10 chain via `gsw`, per `[process.derived_variables]`, then
-        despikes any newly derived channel that's enabled for it.
+        TEOS-10 chain via `gsw`, per `[process.derived_variables]`, one
+        quantity at a time across every profile in the deployment,
+        despiking any newly derived channel that's enabled for it
+        immediately after it's computed and before it feeds the next
+        quantity in the chain. Despiking a derived channel pools its
+        rejection-threshold fit across every profile in the deployment
+        (see [Despiking](../configuration.md#despiking)), which is why
+        this runs on the whole list of profiles at once rather than
+        profile-by-profile.
 9. **Save** — [`save_profile`](../api/process.md) writes each processed
    profile to `paths.profiles_directory`, in `profile_format` (`"parquet"`
    or `"netcdf"`; see [`save_parquet`](../api/process.md) /

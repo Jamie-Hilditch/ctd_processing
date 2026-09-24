@@ -24,7 +24,7 @@ from ctd_processing.config import (
     Settings,
 )
 from ctd_processing.logging_utils import VERBOSE
-from ctd_processing.process import process_deployment, process_profile
+from ctd_processing.process import process_deployment
 from ctd_processing.process.channel import Channel
 from ctd_processing.process.dataset import Dataset
 from ctd_processing.process.profiles import Profile
@@ -319,13 +319,16 @@ def _stub_pipeline(monkeypatch: pytest.MonkeyPatch, serial_number: str) -> dict:
         "process_ct_lag",
         lambda dataset, spans, settings: dataset,
     )
-
-    def fake_process_profile(
-        dataset, geolocation, external_dataset, derived_variables, despike=None
-    ):
-        return dataset
-
-    monkeypatch.setattr(process_module, "process_profile", fake_process_profile)
+    monkeypatch.setattr(
+        process_module,
+        "attach_geolocation_to_profiles",
+        lambda profiles, geolocation, external_dataset: profiles,
+    )
+    monkeypatch.setattr(
+        process_module,
+        "compute_derived_variables",
+        lambda profiles, derived_variables, despike=None: profiles,
+    )
     monkeypatch.setattr(
         process_module,
         "save_profile",
@@ -468,7 +471,7 @@ def test_process_deployment_applies_despike_channel_override(
                     "channels": {
                         "practical_salinity": {
                             "despike": True,
-                            "despiking": {"threshold": 3.0},
+                            "despiking": {"fit_percentile": 80.0},
                         }
                     }
                 }
@@ -485,15 +488,15 @@ def test_process_deployment_applies_despike_channel_override(
     assert captured["process_settings"].channels == {
         "practical_salinity": ChannelSettings(
             despike=True,
-            despiking=DespikeChannelOverride(threshold=3.0),
+            despiking=DespikeChannelOverride(fit_percentile=80.0),
         )
     }
 
 
-def test_process_deployment_calls_process_profile_and_save_profile_per_profile(
+def test_process_deployment_calls_derived_variables_then_save_per_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The loop extracts, processes, then saves each identified profile."""
+    """Extracts every cast, derives variables once, then saves each profile."""
     _stub_pipeline(monkeypatch, serial_number="208532")
     dataset = _real_deployment_dataset(10)
     monkeypatch.setattr(
@@ -506,16 +509,20 @@ def test_process_deployment_calls_process_profile_and_save_profile_per_profile(
         process_module, "find_profiles", lambda dataset, settings: profiles
     )
 
-    process_profile_calls: list[Dataset] = []
+    derived_variables_calls: list[list[Dataset]] = []
     save_profile_calls: list[tuple] = []
 
-    def fake_process_profile(
-        pd, geolocation, external_dataset, derived_variables, despike=None
+    def fake_compute_derived_variables(
+        profile_datasets, derived_variables, despike=None
     ):
-        process_profile_calls.append(pd)
-        return pd
+        derived_variables_calls.append(profile_datasets)
+        return profile_datasets
 
-    monkeypatch.setattr(process_module, "process_profile", fake_process_profile)
+    monkeypatch.setattr(
+        process_module,
+        "compute_derived_variables",
+        fake_compute_derived_variables,
+    )
     monkeypatch.setattr(
         process_module,
         "save_profile",
@@ -531,7 +538,8 @@ def test_process_deployment_calls_process_profile_and_save_profile_per_profile(
         _settings(tmp_path),
     )
 
-    assert [pd.length for pd in process_profile_calls] == [5, 5]
+    assert len(derived_variables_calls) == 1
+    assert [pd.length for pd in derived_variables_calls[0]] == [5, 5]
     assert [index for (_, index) in save_profile_calls] == [0, 1]
 
 
@@ -557,15 +565,19 @@ def test_process_deployment_direction_both_splits_into_two_profiles(
         process_module, "find_profiles", lambda dataset, settings: [profile]
     )
 
-    process_profile_calls: list[Dataset] = []
+    derived_variables_calls: list[list[Dataset]] = []
 
-    def fake_process_profile(
-        pd, geolocation, external_dataset, derived_variables, despike=None
+    def fake_compute_derived_variables(
+        profile_datasets, derived_variables, despike=None
     ):
-        process_profile_calls.append(pd)
-        return pd
+        derived_variables_calls.append(profile_datasets)
+        return profile_datasets
 
-    monkeypatch.setattr(process_module, "process_profile", fake_process_profile)
+    monkeypatch.setattr(
+        process_module,
+        "compute_derived_variables",
+        fake_compute_derived_variables,
+    )
     monkeypatch.setattr(
         process_module,
         "save_profile",
@@ -583,7 +595,7 @@ def test_process_deployment_direction_both_splits_into_two_profiles(
         settings,
     )
 
-    assert [pd.length for pd in process_profile_calls] == [4, 4]
+    assert [pd.length for pd in derived_variables_calls[0]] == [4, 4]
 
 
 def test_process_deployment_passes_resolved_spans_to_ct_lag(
@@ -643,13 +655,6 @@ def test_process_deployment_opens_external_geolocation_dataset_once(
         "find_profiles",
         lambda dataset, settings: _two_profiles(10),
     )
-
-    def fake_process_profile(
-        pd, geolocation, external_dataset, derived_variables, despike=None
-    ):
-        return pd
-
-    monkeypatch.setattr(process_module, "process_profile", fake_process_profile)
     monkeypatch.setattr(
         process_module,
         "save_profile",
@@ -686,33 +691,62 @@ def test_process_deployment_opens_external_geolocation_dataset_once(
     assert len(close_calls) == 1
 
 
-def test_process_profile_attaches_geolocation_before_derived_variables(
-    monkeypatch: pytest.MonkeyPatch,
+def test_process_deployment_attaches_geolocation_before_derived_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """process_profile geolocates before computing derived variables."""
+    """process_deployment geolocates every profile before deriving variables."""
+    _stub_pipeline(monkeypatch, serial_number="208532")
+    dataset = _real_deployment_dataset(10)
+    monkeypatch.setattr(
+        process_module,
+        "build_dataset",
+        lambda rsk, file, project, read_channels=None: dataset,
+    )
+    monkeypatch.setattr(
+        process_module,
+        "find_profiles",
+        lambda dataset, settings: _two_profiles(10),
+    )
+
     calls: list[str] = []
 
-    def fake_attach_geolocation(dataset, settings, external_dataset):
-        calls.append("attach_geolocation")
-        return dataset
+    def fake_attach_geolocation_to_profiles(
+        profiles, geolocation, external_dataset
+    ):
+        calls.append("attach_geolocation_to_profiles")
+        return profiles
 
-    def fake_compute_derived_variables(dataset, settings, despike=None):
+    def fake_compute_derived_variables(
+        profiles, derived_variables, despike=None
+    ):
         calls.append("compute_derived_variables")
-        return dataset
+        return profiles
 
     monkeypatch.setattr(
-        process_module, "attach_geolocation", fake_attach_geolocation
+        process_module,
+        "attach_geolocation_to_profiles",
+        fake_attach_geolocation_to_profiles,
     )
     monkeypatch.setattr(
         process_module,
         "compute_derived_variables",
         fake_compute_derived_variables,
     )
-
-    sentinel = _real_deployment_dataset(1)
-    result = process_profile(
-        sentinel, _GEOLOCATION, None, DerivedVariablesSettings()
+    monkeypatch.setattr(
+        process_module,
+        "save_profile",
+        lambda deployment_dataset, pd, index, directory, format: (
+            directory / f"p{index}"
+        ),
     )
 
-    assert calls == ["attach_geolocation", "compute_derived_variables"]
-    assert result is sentinel
+    process_deployment(
+        tmp_path / "rsk" / "243188_20260809_0304.rsk",
+        tmp_path / "profiles",
+        _settings(tmp_path),
+    )
+
+    assert calls == [
+        "attach_geolocation_to_profiles",
+        "compute_derived_variables",
+    ]

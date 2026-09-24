@@ -19,7 +19,7 @@ from ctd_processing.process.dataset import Dataset
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["attach_geolocation"]
+__all__ = ["attach_geolocation", "attach_geolocation_to_profiles"]
 
 
 def _interpolate_position(
@@ -92,7 +92,7 @@ def attach_geolocation(
     ----------
     dataset : Dataset
         One already-extracted profile `Dataset` (see
-        `ctd_processing.process.process_profile`). Mutated in place.
+        `attach_geolocation_to_profiles`). Mutated in place.
     settings : GeolocationSettings
         Configures which position source to use.
     external_dataset : xarray.Dataset or None
@@ -136,3 +136,35 @@ def attach_geolocation(
     dataset.record(description)
     log_verbose(logger, description)
     return dataset
+
+
+def attach_geolocation_to_profiles(
+    profiles: list[Dataset],
+    settings: GeolocationSettings,
+    external_dataset: xr.Dataset | None,
+) -> list[Dataset]:
+    """Attach a canonical time and position to every profile in `profiles`.
+
+    Thin batch wrapper around `attach_geolocation`: position is resolved
+    independently per profile (unlike despiking, there is nothing to pool
+    across profiles here), so this is just `attach_geolocation` called
+    once per profile.
+
+    Parameters
+    ----------
+    profiles : list[Dataset]
+        One deployment's already-extracted profile `Dataset`s. Each is
+        mutated in place.
+    settings : GeolocationSettings
+        Forwarded to `attach_geolocation`.
+    external_dataset : xarray.Dataset or None
+        Forwarded to `attach_geolocation`.
+
+    Returns
+    -------
+    list[Dataset]
+        `profiles` itself (not a copy).
+    """
+    for profile in profiles:
+        attach_geolocation(profile, settings, external_dataset)
+    return profiles

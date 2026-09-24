@@ -399,16 +399,22 @@ def test_process_raw_channel_applies_despike_last() -> None:
     remove_holds+shift-corrected array, not the raw input. The spike
     sitting one sample from the array's end also drags the rolling
     median at the last sample (index 6) partway toward it, so that
-    sample's residual crosses threshold too -- MAD isn't inflated by the
-    spike the way a plain standard deviation would be, so it doesn't get
-    masked the way it would have under the old std-based scale.
+    sample's residual crosses the threshold too. Uses
+    rejection_method="absolute_threshold" for a deterministic threshold,
+    since a 7-sample array is far too small for the default GPD fit to do
+    anything but fall back to a plain percentile.
     """
     channel = Channel(data=np.array([1.0, 1.0, 2.0, 3.0, 50.0, 3.0, 3.0]))
+    despike = DespikeSettings(
+        reference_window_length=3,
+        rejection_method="absolute_threshold",
+        rejection_threshold=10.0,
+    )
 
     result = process_raw_channel(
         channel,
         RawChannelSettings(remove_holds=True, shift=1),
-        DespikeSettings(),
+        despike,
     )
 
     assert np.isnan(result.data[5])
@@ -416,7 +422,7 @@ def test_process_raw_channel_applies_despike_last() -> None:
     assert result.history == [
         "removed 2 zero-order hold value(s)",
         "shifted by 1 sample(s)",
-        "despiked 2 point(s)",
+        "despiked 2 point(s) (absolute threshold=10)",
     ]
 
 

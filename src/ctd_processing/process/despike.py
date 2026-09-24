@@ -1,57 +1,74 @@
 """Despiking, configured via `process.despiking` and `process.channels`.
 
 See `ctd_processing.config.DespikeSettings` and
-`ctd_processing.config.resolve_despike_settings`. This is loosely based on
-`pyrsktools.RSK.despike`'s algorithm -- smooth with a rolling median
-filter to get a "reference" series, form the residual against it, and
-flag points whose residual exceeds ``threshold`` times a robust
-(median-absolute-deviation-based) estimate of the residual's local
-spread -- with deliberate differences:
+`ctd_processing.config.resolve_despike_settings`. Smooths a channel with a
+rolling median filter to get a "reference" series, forms the residual
+against it, and flags points whose residual magnitude exceeds a rejection
+threshold -- resolved per `DespikeSettings.rejection_method` -- replacing
+them with NaN. Loosely based on `pyrsktools.RSK.despike`'s
+reference-then-threshold shape, with deliberate differences:
 
-- The reference and the spread estimate use two independently-sized
-  rolling windows, not one. `_rolling_nanmedian` smooths the data over
-  `DespikeSettings.reference_window_length` to get the reference series;
-  `_rolling_mad` then estimates the residual's local spread over the
-  wider `DespikeSettings.scale_window_length`. A single small window
-  can't do both jobs well: the reference needs to stay tight and
-  responsive, while a robust spread estimate needs more samples to be
-  statistically stable. `pyrsktools.RSK.despike` uses one window and a
-  single whole-array standard deviation for the threshold.
-- The spread estimate is MAD-based rather than a standard deviation. Std
-  is inflated by the very spikes it's trying to measure; MAD isn't (up to
-  its ~50% breakdown point), so a pass's threshold isn't dragged around
-  by the spikes it's meant to catch.
+- The default rejection rule (`rejection_method="gpd_percentile"`) fits a
+  Generalized Pareto Distribution to the residual's tail via
+  peaks-over-threshold, rather than assuming the residual is Gaussian (an
+  "N x MAD"/"N x std" rule). Real residuals (e.g. `practical_salinity`
+  against a rolling median) are often heavy-tailed / power-law-like, not
+  Gaussian, and a fixed-multiplier rule miscalibrated for that shape either
+  misses real spikes or floods the output with false positives. The
+  Pickands-Balkema-de Haan theorem guarantees the distribution of
+  exceedances above a high-enough threshold converges to a GPD regardless
+  of the parent distribution's shape, which is what makes this a
+  principled default rather than another fixed-shape assumption.
+  `rejection_method` also offers two escape hatches (`"raw_percentile"`,
+  `"absolute_threshold"`) for users manually tuning despiking who want to
+  skip the GPD fit.
+- `despike_arrays` can despike several related arrays (e.g. one per cast in
+  a deployment) together, fitting a single rejection threshold pooled
+  across all of them -- a GPD fit is more stable with more data, which is
+  why `ctd_processing.process.derived_variables` pools every cast in a
+  deployment. `despike_array` is the single-array case (used for raw
+  channels, already deployment-wide as a single array).
+- There is no `iterations`/repeat-pass option. The old MAD-based design
+  could safely re-fit after masking, since MAD isn't inflated by the
+  spikes it measures. A GPD fit is different: it depends on the most
+  extreme points in the tail to estimate `xi`/`sigma`. Masking those out
+  and refitting would remove exactly the evidence the fit needs, biasing
+  it the same way fitting to a truncated/windowed tail does (see
+  `ctd_processing.config.DespikeSettings.rejection_method`'s docstring).
+  Despiking is a single detect-and-replace pass.
 - Flagged points are always replaced with NaN. `pyrsktools.RSK.despike`
   also supports replacing with the reference value or a linear
   interpolation; neither is offered here.
-- The whole detect-and-replace step can run for up to
-  `DespikeSettings.iterations` passes, stopping early the first pass
-  that flags nothing new. Because the MAD-based spread isn't inflated by
-  spikes, a single pass usually already catches everything a std-based
-  approach would need several iterations to "unmask"; `iterations`
-  defaults to ``1`` and mainly exists as an escape valve for unusual
-  data. `pyrsktools.RSK.despike` only ever runs one pass.
 
-Like `ct_lag.py`'s `_moving_nanmean`, both rolling filters here use an
+Like `ct_lag.py`'s `_moving_nanmean`, the rolling median filter here uses an
 edge-clipped window (shrinks near the array boundary) instead of
 `pyrsktools.utils.runmed`'s mirror-padding -- the same deliberate,
 documented divergence from pyrsktools at the edges.
 """
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import numba
 import numpy as np
 import numpy.typing as npt
+from scipy import stats
 
-from ctd_processing.config import DespikeSettings
+from ctd_processing.config import DespikeSettings, RejectionMethod
 from ctd_processing.logging_utils import log_verbose
 from ctd_processing.process.channel import Channel
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["despike_array", "despike_channel"]
+__all__ = [
+    "RejectionThresholdResult",
+    "describe_rejection_threshold",
+    "despike_array",
+    "despike_arrays",
+    "despike_channel",
+    "resolve_rejection_threshold",
+]
 
 
 @numba.njit(cache=True)
@@ -104,123 +121,308 @@ def _rolling_nanmedian(
     return out
 
 
-@numba.njit(cache=True)
-def _rolling_mad(
-    data: npt.NDArray[Any], window_length: int
-) -> npt.NDArray[Any]:
-    """Center a `window_length`-wide MAD filter on every sample of `data`.
+@dataclass(frozen=True)
+class RejectionThresholdResult:
+    """The resolved rejection threshold for one despike pass, and how.
 
-    For each sample, takes the window's own median of its finite values
-    (the same edge-clipped convention as `_rolling_nanmedian`), then the
-    median of that window's absolute deviations from its own median --
-    a local, unscaled median absolute deviation. A window with no finite
-    values yields NaN.
+    Returned by `resolve_rejection_threshold`; carried through
+    `despike_arrays`/`despike_array` so callers can log/record what
+    actually happened, not just the outcome.
+
+    Attributes
+    ----------
+    threshold : float
+        Points whose residual magnitude exceeds this are flagged as
+        spikes. ``numpy.nan`` if no threshold could be resolved (e.g. no
+        finite residuals at all under `"gpd_percentile"`/`"raw_percentile"`).
+    method : ctd_processing.config.RejectionMethod
+        Which `DespikeSettings.rejection_method` produced `threshold`.
+    used_fallback : bool
+        Only meaningful when `method` is ``"gpd_percentile"``: whether the
+        GPD fit was skipped in favor of a plain empirical percentile,
+        either because too few points exceeded
+        `DespikeSettings.fit_percentile` (see
+        `DespikeSettings.min_exceedances`) or because there was no finite
+        data at all.
+    shape : float or None
+        The fitted GPD shape parameter (``xi``). Only set when `method` is
+        ``"gpd_percentile"`` and `used_fallback` is `False`.
+    scale : float or None
+        The fitted GPD scale parameter (``sigma``). Only set when `method`
+        is ``"gpd_percentile"`` and `used_fallback` is `False`.
+    n : int or None
+        Number of finite ``|residual|`` values `threshold` was resolved
+        from. ``None`` for `"absolute_threshold"`, which uses no data.
+    n_exceedances : int or None
+        Number of points exceeding `DespikeSettings.fit_percentile`'s
+        threshold. Only meaningful when `method` is ``"gpd_percentile"``.
+    """
+
+    threshold: float
+    method: RejectionMethod
+    used_fallback: bool
+    shape: float | None
+    scale: float | None
+    n: int | None
+    n_exceedances: int | None
+
+
+def _fit_gpd_threshold(
+    abs_residual: npt.NDArray[Any], settings: DespikeSettings
+) -> RejectionThresholdResult:
+    """Fit a GPD to `abs_residual`'s tail via peaks-over-threshold.
+
+    Solves for the value ``x`` such that
+    ``P(|residual| > x) = 1 - settings.rejection_percentile / 100`` under
+    the fitted tail. Falls back to a plain empirical percentile (no
+    extrapolation) if there are fewer than `settings.min_exceedances`
+    points above the `settings.fit_percentile` threshold, or no finite
+    data at all -- the GPD's extrapolation is only trustworthy with enough
+    exceedances to fit `xi`/`sigma` stably.
 
     Parameters
     ----------
-    data : numpy.typing.NDArray[Any]
-        The array to filter. Not mutated.
-    window_length : int
-        Width of the filter window, in samples. Must be odd.
+    abs_residual : numpy.typing.NDArray[Any]
+        Finite ``|residual|`` values, pooled across however many arrays
+        this fit spans. Must contain no NaN/inf.
+    settings : DespikeSettings
+        Supplies `fit_percentile`, `rejection_percentile`, and
+        `min_exceedances`.
 
     Returns
     -------
-    numpy.typing.NDArray[Any]
-        The local MAD, unscaled (not yet multiplied by ``1.4826``), the
-        same length as `data`.
+    RejectionThresholdResult
+        `method` is always ``"gpd_percentile"``.
     """
-    n = data.shape[0]
-    half = (window_length - 1) // 2
-    out = np.empty(n, dtype=np.float64)
-    buffer = np.empty(window_length, dtype=np.float64)
-    deviations = np.empty(window_length, dtype=np.float64)
-    for i in range(n):
-        lo = max(0, i - half)
-        hi = min(n, i + half + 1)
-        count = 0
-        for j in range(lo, hi):
-            value = data[j]
-            if not np.isnan(value):
-                buffer[count] = value
-                count += 1
-        if count == 0:
-            out[i] = np.nan
-            continue
+    n = abs_residual.size
+    if n == 0:
+        return RejectionThresholdResult(
+            threshold=np.nan,
+            method="gpd_percentile",
+            used_fallback=True,
+            shape=None,
+            scale=None,
+            n=0,
+            n_exceedances=0,
+        )
 
-        window = buffer[:count]
-        window.sort()
-        mid = count // 2
-        if count % 2 == 1:
-            center = window[mid]
-        else:
-            center = (window[mid - 1] + window[mid]) / 2.0
+    u = np.percentile(abs_residual, settings.fit_percentile)
+    exceedances = abs_residual[abs_residual > u] - u
+    n_exceedances = exceedances.size
+    if n_exceedances < settings.min_exceedances:
+        threshold = float(
+            np.percentile(abs_residual, settings.rejection_percentile)
+        )
+        return RejectionThresholdResult(
+            threshold=threshold,
+            method="gpd_percentile",
+            used_fallback=True,
+            shape=None,
+            scale=None,
+            n=n,
+            n_exceedances=n_exceedances,
+        )
 
-        for k in range(count):
-            deviations[k] = abs(window[k] - center)
-        dev = deviations[:count]
-        dev.sort()
-        if count % 2 == 1:
-            out[i] = dev[mid]
-        else:
-            out[i] = (dev[mid - 1] + dev[mid]) / 2.0
-    return out
+    shape, _, scale = stats.genpareto.fit(exceedances, floc=0)
+    exceed_prob = (1 - settings.rejection_percentile / 100) * n / n_exceedances
+    if abs(shape) < 1e-8:
+        threshold = float(u + scale * (-np.log(exceed_prob)))
+    else:
+        threshold = float(u + (scale / shape) * (exceed_prob ** (-shape) - 1))
+    return RejectionThresholdResult(
+        threshold=threshold,
+        method="gpd_percentile",
+        used_fallback=False,
+        shape=float(shape),
+        scale=float(scale),
+        n=n,
+        n_exceedances=n_exceedances,
+    )
+
+
+def resolve_rejection_threshold(
+    residual: npt.NDArray[Any], settings: DespikeSettings
+) -> RejectionThresholdResult:
+    """Resolve a rejection threshold for `residual` per `settings`.
+
+    Dispatches on `settings.rejection_method`:
+
+    - ``"absolute_threshold"``: returns `settings.rejection_threshold`
+      verbatim; `residual` is not touched.
+    - ``"raw_percentile"``: ``numpy.percentile(|residual|,
+      settings.rejection_percentile)``, no tail extrapolation.
+    - ``"gpd_percentile"`` (default): see `_fit_gpd_threshold`.
+
+    Parameters
+    ----------
+    residual : numpy.typing.NDArray[Any]
+        ``data - reference``, possibly pooled across several arrays (e.g.
+        every cast in a deployment). May contain NaN/inf (ignored).
+    settings : DespikeSettings
+        Selects and configures the rejection method.
+
+    Returns
+    -------
+    RejectionThresholdResult
+    """
+    if settings.rejection_method == "absolute_threshold":
+        assert settings.rejection_threshold is not None  # validated
+        return RejectionThresholdResult(
+            threshold=settings.rejection_threshold,
+            method="absolute_threshold",
+            used_fallback=False,
+            shape=None,
+            scale=None,
+            n=None,
+            n_exceedances=None,
+        )
+
+    abs_residual = np.abs(residual[np.isfinite(residual)])
+    if settings.rejection_method == "raw_percentile":
+        threshold = (
+            float(np.percentile(abs_residual, settings.rejection_percentile))
+            if abs_residual.size
+            else np.nan
+        )
+        return RejectionThresholdResult(
+            threshold=threshold,
+            method="raw_percentile",
+            used_fallback=False,
+            shape=None,
+            scale=None,
+            n=abs_residual.size,
+            n_exceedances=None,
+        )
+
+    return _fit_gpd_threshold(abs_residual, settings)
+
+
+def despike_arrays(
+    data_list: list[npt.NDArray[Any]], settings: DespikeSettings
+) -> tuple[list[npt.NDArray[Any]], list[int], RejectionThresholdResult]:
+    """Replace spikes with NaN across several related arrays at once.
+
+    Each array is smoothed with `_rolling_nanmedian` over
+    `settings.reference_window_length` independently to get its own
+    reference/residual -- the reference never crosses array boundaries.
+    Every array's finite residuals are then pooled and fed to one shared
+    `resolve_rejection_threshold` call, and each array is flagged/replaced
+    independently against that one threshold. A single, non-iterated pass
+    (see module docstring for why).
+
+    Parameters
+    ----------
+    data_list : list[numpy.typing.NDArray[Any]]
+        The arrays to despike, e.g. one per cast in a deployment. Not
+        mutated; new arrays are returned. May be empty.
+    settings : DespikeSettings
+        Configures the reference window and rejection method.
+
+    Returns
+    -------
+    tuple[list[numpy.typing.NDArray[Any]], list[int], RejectionThresholdResult]
+        The despiked arrays (same order/lengths as `data_list`), the
+        number of points replaced in each, and the threshold resolution
+        shared across all of them.
+    """
+    working = [d.astype(np.float64, copy=True) for d in data_list]
+    residuals = [
+        w - _rolling_nanmedian(w, settings.reference_window_length)  # ty: ignore
+        for w in working
+    ]
+    pooled = (
+        np.concatenate(residuals)
+        if residuals
+        else np.array([], dtype=np.float64)
+    )
+    result = resolve_rejection_threshold(pooled, settings)
+
+    counts = [0] * len(working)
+    if np.isfinite(result.threshold):
+        for i, residual in enumerate(residuals):
+            valid = np.isfinite(residual)
+            spike_mask = np.zeros(residual.shape, dtype=bool)
+            spike_mask[valid] = np.abs(residual[valid]) > result.threshold
+            indices = np.flatnonzero(spike_mask)
+            if indices.size:
+                working[i][indices] = np.nan
+                counts[i] = indices.size
+
+    return working, counts, result
 
 
 def despike_array(
     data: npt.NDArray[Any], settings: DespikeSettings
-) -> tuple[npt.NDArray[Any], int]:
-    """Replace spikes in `data` with NaN, up to `iterations` passes.
+) -> tuple[npt.NDArray[Any], int, RejectionThresholdResult]:
+    """Replace spikes in `data` with NaN.
 
-    Each pass: smooths `data` with `_rolling_nanmedian` over
-    `settings.reference_window_length` to get a reference series, forms
-    the residual (`data - reference`), and flags points whose residual
-    magnitude exceeds ``settings.threshold`` times a local, MAD-based
-    robust estimate of the residual's spread -- ``1.4826 *
-    _rolling_mad(residual, settings.scale_window_length)``; the
-    ``1.4826`` constant makes this a consistent estimator of standard
-    deviation under Gaussian noise. A point whose residual or local
-    spread isn't finite (or whose local spread is exactly ``0``, i.e. no
-    variability nearby) can't be flagged. Flagged points are set to NaN.
-    Stops as soon as a pass flags nothing new, or after
-    `settings.iterations` passes, whichever comes first.
+    Single-array case of `despike_arrays`, for a channel that is already
+    despiked as one whole array (e.g. a raw channel, despiked deployment-
+    wide before any cast splitting).
 
     Parameters
     ----------
     data : numpy.typing.NDArray[Any]
         The data to despike. Not mutated; a new array is returned.
     settings : DespikeSettings
-        Configures the two filter windows, spike threshold, and
-        iteration limit.
+        Configures the reference window and rejection method.
 
     Returns
     -------
-    tuple[numpy.typing.NDArray[Any], int]
-        The despiked data, and the total number of points replaced
-        across every pass.
+    tuple[numpy.typing.NDArray[Any], int, RejectionThresholdResult]
+        The despiked data, the number of points replaced, and the
+        threshold resolution.
     """
-    working = data.astype(np.float64, copy=True)
-    ref_window = settings.reference_window_length
-    scale_window = settings.scale_window_length
-    total = 0
-    for _ in range(settings.iterations):
-        reference = _rolling_nanmedian(working, ref_window)  # ty: ignore
-        residual = working - reference
-        local_mad = _rolling_mad(residual, scale_window)  # ty: ignore
-        scale = 1.4826 * local_mad
+    despiked, counts, result = despike_arrays([data], settings)
+    return despiked[0], counts[0], result
 
-        valid = np.isfinite(residual) & np.isfinite(scale) & (scale > 0)
-        spike_mask = np.zeros(residual.shape, dtype=bool)
-        spike_mask[valid] = (
-            np.abs(residual[valid]) > settings.threshold * scale[valid]
+
+def describe_rejection_threshold(
+    settings: DespikeSettings, result: RejectionThresholdResult
+) -> str:
+    """Describe how a rejection threshold was resolved, for logging/history.
+
+    Shared by `despike_channel` and
+    `ctd_processing.process.derived_variables` so every recorded/logged
+    despike description carries the same threshold detail regardless of
+    call site -- each caller wraps this in its own ``"despiked N point(s)
+    (...)"``-shaped message, since how many points that threshold actually
+    flagged is call-site-specific (e.g. one shared pooled fit, many
+    per-profile counts).
+
+    Parameters
+    ----------
+    settings : DespikeSettings
+        The settings the threshold in `result` was resolved under.
+    result : RejectionThresholdResult
+        The resolved threshold, as returned by `despike_array`/
+        `despike_arrays`.
+
+    Returns
+    -------
+    str
+        E.g. ``"GPD fit: threshold=0.041, xi=0.52, sigma=0.0031, n=1200,
+        n_exceedances=120"``, with no surrounding parentheses.
+    """
+    if result.method == "absolute_threshold":
+        return f"absolute threshold={result.threshold:g}"
+    if result.method == "raw_percentile":
+        return (
+            f"raw percentile: threshold={result.threshold:g}, "
+            f"percentile={settings.rejection_percentile:g}, n={result.n}"
         )
-        indices = np.flatnonzero(spike_mask)
-        if indices.size == 0:
-            break
-
-        working[indices] = np.nan
-        total += indices.size
-
-    return working, total
+    if result.used_fallback:
+        return (
+            "empirical percentile fallback: "
+            f"threshold={result.threshold:g}, n={result.n}, "
+            f"n_exceedances={result.n_exceedances} < "
+            f"min_exceedances={settings.min_exceedances}"
+        )
+    return (
+        f"GPD fit: threshold={result.threshold:g}, xi={result.shape:g}, "
+        f"sigma={result.scale:g}, n={result.n}, "
+        f"n_exceedances={result.n_exceedances}"
+    )
 
 
 def despike_channel(channel: Channel, settings: DespikeSettings) -> Channel:
@@ -238,9 +440,10 @@ def despike_channel(channel: Channel, settings: DespikeSettings) -> Channel:
     -------
     Channel
         `channel` itself (not a copy), with a new entry appended to
-        `channel.history` recording how many points were replaced, if
-        any were. The replaced count is logged at `VERBOSE` regardless
-        -- including ``0`` -- so a run that despiked nothing is still
+        `channel.history` recording how many points were replaced and how
+        the rejection threshold was resolved, if any points were replaced.
+        The outcome is logged at `VERBOSE` regardless -- including a
+        replaced count of ``0`` -- so a run that despiked nothing is still
         visible in the log, not just a silent no-op.
 
     Raises
@@ -254,9 +457,10 @@ def despike_channel(channel: Channel, settings: DespikeSettings) -> Channel:
             f"{channel.data.dtype}."
         )
 
-    despiked, count = despike_array(channel.data, settings)
+    despiked, count, result = despike_array(channel.data, settings)
     channel.data[:] = despiked
-    description = f"despiked {count} point(s)"
+    detail = describe_rejection_threshold(settings, result)
+    description = f"despiked {count} point(s) ({detail})"
     if count:
         channel.record(description)
     log_verbose(logger, description)

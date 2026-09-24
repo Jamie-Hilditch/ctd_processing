@@ -412,40 +412,63 @@
 # oxygen_concentration = false
 
 # [process.despiking] sets the project-wide default despike settings --
-# how many MAD-based (median absolute deviation) spread units of the
-# residual against a rolling median count as a spike, how wide the two
-# rolling windows involved are (one smooths the reference series, a
-# separate wider one estimates the local spread), and how many
-# detect-and-replace passes to run at most (stopping early the first
-# pass that finds nothing new). Spikes are always replaced with NaN.
-# These are only defaults: whether a given channel is despiked at all is
-# configured per channel, in [process.channels.<name>] below -- setting
-# values here alone despikes nothing.
+# a channel is smoothed with a rolling median filter to get a "reference"
+# series, and a point whose residual against that reference exceeds a
+# rejection threshold is replaced with NaN, in a single (non-repeated)
+# detect-and-replace pass. How that threshold is resolved is controlled
+# by rejection_method. These are only defaults: whether a given channel
+# is despiked at all is configured per channel, in
+# [process.channels.<name>] below -- setting values here alone despikes
+# nothing.
 #
 # [process.despiking]
 
-# threshold (default: 3.0): number of MAD-based spread units a point's
-# residual against the rolling median must exceed to be flagged.
-# threshold = 3.0
-
-# reference_window_length (default: 3): width, in samples, of the
+# reference_window_length (default: 31): width, in samples, of the
 # rolling median filter that produces the reference series. Must be odd
-# -- kept small so the reference stays responsive to real structure in
-# the data.
-# reference_window_length = 3
+# -- wide enough (on the order of 30 samples) that a robust reference
+# reliably rejects an isolated spike rather than being dragged by it.
+# reference_window_length = 31
 
-# scale_window_length (default: 11): width, in samples, of the window
-# the MAD-based local spread estimate is computed over. Must be odd --
-# meaningfully wider than reference_window_length, since a robust spread
-# estimate needs more samples to be statistically stable than the
-# reference needs to stay responsive.
-# scale_window_length = 11
+# rejection_method (default: "gpd_percentile"): how the rejection
+# threshold is resolved. "gpd_percentile" (the default) fits a
+# Generalized Pareto Distribution to the residual's tail via
+# peaks-over-threshold (see fit_percentile/rejection_percentile/
+# min_exceedances below) -- a principled default that doesn't assume the
+# residual is Gaussian, unlike a fixed "N x MAD"/"N x std" rule.
+# "raw_percentile" skips the GPD fit and uses a plain
+# numpy.percentile(abs(residual), rejection_percentile) instead, with no
+# tail extrapolation. "absolute_threshold" skips computing anything from
+# the data and uses rejection_threshold below verbatim. The latter two
+# are for users manually tuning despiking who want to bypass the GPD fit
+# -- it's meant to be a reliable default, not mandatory.
+# rejection_method = "gpd_percentile"
 
-# iterations (default: 1): maximum number of detect-and-replace passes
-# to run. Because the MAD-based spread isn't inflated by the spikes it's
-# measuring, a single pass usually already catches everything; this
-# mostly exists as an escape valve for unusual data.
-# iterations = 1
+# fit_percentile (default: 90.0): only used when rejection_method is
+# "gpd_percentile". Percentile of abs(residual) used as the
+# peaks-over-threshold fitting threshold -- the point above which the
+# tail is assumed to follow a GPD closely enough to fit. Not the final
+# rejection cutoff itself; rarely needs changing.
+# fit_percentile = 90.0
+
+# rejection_percentile (default: 99.9): the percentile of abs(residual)
+# the resolved rejection threshold corresponds to. Under
+# "gpd_percentile", this is extrapolated from the fitted tail; under
+# "raw_percentile", it's a plain empirical percentile with no
+# extrapolation. Unused under "absolute_threshold".
+# rejection_percentile = 99.9
+
+# min_exceedances (default: 200): only used when rejection_method is
+# "gpd_percentile". Minimum number of points exceeding fit_percentile's
+# threshold required to trust the GPD fit; below this, falls back to a
+# plain empirical rejection_percentile instead of fitting shape/scale on
+# too few points.
+# min_exceedances = 200
+
+# rejection_threshold (optional, default: unset): the rejection
+# threshold to use verbatim, in the channel's own units, when
+# rejection_method is "absolute_threshold". Required in that case; must
+# be left unset for every other rejection_method.
+# rejection_threshold = 0.05
 
 # [process.channels.<name>] sections are optional and configure
 # per-channel output settings: despiking and output precision. <name>
@@ -459,25 +482,28 @@
 # [process.despiking]'s project-wide defaults, as overridden by this
 # channel's own despiking table below (if any). Despiking runs as soon
 # as a channel exists -- for raw channels, before any derived variable
-# is computed from them; for derived channels, immediately after that
-# quantity is computed and before it feeds the next one (e.g.
-# practical_salinity is despiked before it's used to compute
+# is computed from them, over the whole deployment at once; for derived
+# channels, immediately after that quantity is computed for every
+# profile in the deployment and before it feeds the next one (e.g.
+# practical_salinity is despiked, pooling its rejection-threshold fit
+# across every cast in the deployment, before it's used to compute
 # absolute_salinity).
 #
 # [process.channels.temperature]
 # despike = true
 #
-# despiking (optional): overrides threshold/reference_window_length/
-# scale_window_length/iterations from [process.despiking] for just this
-# channel (any field left out inherits the project-wide default). Only
-# takes effect when despike is true above -- setting this alone, without
+# despiking (optional): overrides reference_window_length/
+# fit_percentile/rejection_percentile/min_exceedances/rejection_method/
+# rejection_threshold from [process.despiking] for just this channel
+# (any field left out inherits the project-wide default). Only takes
+# effect when despike is true above -- setting this alone, without
 # despike = true, does nothing.
 #
 # [process.channels.practical_salinity]
 # despike = true
 #
 # [process.channels.practical_salinity.despiking]
-# threshold = 4.0
+# rejection_percentile = 99.5
 
 # output_dtype (optional, default: unset, meaning use [process]'s
 # project-wide output_dtype below): the numpy floating-point dtype

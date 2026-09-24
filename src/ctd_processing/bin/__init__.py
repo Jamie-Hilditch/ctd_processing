@@ -82,7 +82,7 @@ def bin_deployment(
     ----------
     profiles : list[Dataset]
         Every already-extracted, already-processed profile belonging to
-        one deployment (see `ctd_processing.process.process_profile`).
+        one deployment (see `ctd_processing.process.process_deployment`).
     settings : BinSettings
         Configures which channel to bin by and the bin grid.
 

@@ -2,7 +2,7 @@
 
 See `ctd_processing.config.BinSettings`. `bin_profile` bins a single
 already-extracted, already-processed profile `Dataset` (see
-`ctd_processing.process.process_profile`) along one of its channels
+`ctd_processing.process.process_deployment`) along one of its channels
 (`BinSettings.channel`), reducing every other channel within each bin per
 `BinSettings.method`/`BinSettings.channels` (see
 `ctd_processing.config.resolve_bin_method` and

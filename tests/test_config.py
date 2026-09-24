@@ -1076,12 +1076,14 @@ def test_process_derived_variables_rejects_unknown_key(tmp_path) -> None:
 
 
 def test_despike_settings_defaults() -> None:
-    """reference_window_length matches pyrsktools'; other fields don't."""
+    """reference_window_length is wider than pyrsktools'; GPD fit is default."""
     settings = DespikeSettings()
-    assert settings.threshold == 3.0
-    assert settings.reference_window_length == 3
-    assert settings.scale_window_length == 11
-    assert settings.iterations == 1
+    assert settings.reference_window_length == 31
+    assert settings.fit_percentile == 90.0
+    assert settings.rejection_percentile == 99.9
+    assert settings.min_exceedances == 200
+    assert settings.rejection_method == "gpd_percentile"
+    assert settings.rejection_threshold is None
 
 
 def test_despike_settings_rejects_even_reference_window_length() -> None:
@@ -1090,10 +1092,60 @@ def test_despike_settings_rejects_even_reference_window_length() -> None:
         DespikeSettings(reference_window_length=4)
 
 
-def test_despike_settings_rejects_even_scale_window_length() -> None:
-    """An even scale_window_length fails validation."""
+def test_despike_settings_rejects_threshold_kwarg() -> None:
+    """The removed `threshold` field raises instead of being ignored."""
     with pytest.raises(ValidationError):
-        DespikeSettings(scale_window_length=4)
+        DespikeSettings(threshold=3.0)  # ty: ignore
+
+
+def test_despike_settings_rejects_scale_window_length_kwarg() -> None:
+    """The removed `scale_window_length` field raises instead of ignored."""
+    with pytest.raises(ValidationError):
+        DespikeSettings(scale_window_length=11)  # ty: ignore
+
+
+def test_despike_settings_rejects_iterations_kwarg() -> None:
+    """The removed `iterations` field raises instead of being ignored."""
+    with pytest.raises(ValidationError):
+        DespikeSettings(iterations=1)  # ty: ignore
+
+
+def test_despike_settings_rejects_rejection_percentile_below_fit() -> None:
+    """rejection_percentile must exceed fit_percentile."""
+    with pytest.raises(ValidationError):
+        DespikeSettings(fit_percentile=99.0, rejection_percentile=90.0)
+
+
+def test_despike_settings_rejects_rejection_percentile_at_100() -> None:
+    """rejection_percentile must be strictly less than 100."""
+    with pytest.raises(ValidationError):
+        DespikeSettings(rejection_percentile=100.0)
+
+
+def test_despike_settings_rejects_non_positive_min_exceedances() -> None:
+    """min_exceedances must be positive."""
+    with pytest.raises(ValidationError):
+        DespikeSettings(min_exceedances=0)
+
+
+def test_despike_settings_requires_threshold_for_absolute_method() -> None:
+    """rejection_method="absolute_threshold" requires rejection_threshold."""
+    with pytest.raises(ValidationError):
+        DespikeSettings(rejection_method="absolute_threshold")
+
+
+def test_despike_settings_rejects_threshold_without_absolute_method() -> None:
+    """rejection_threshold must be left unset unless the method needs it."""
+    with pytest.raises(ValidationError):
+        DespikeSettings(rejection_threshold=0.05)
+
+
+def test_despike_settings_absolute_threshold_succeeds() -> None:
+    """The one combination that needs rejection_threshold validates fine."""
+    settings = DespikeSettings(
+        rejection_method="absolute_threshold", rejection_threshold=0.05
+    )
+    assert settings.rejection_threshold == 0.05
 
 
 def test_process_despiking_defaults(tmp_path) -> None:
@@ -1123,14 +1175,16 @@ def test_resolve_despike_settings_uses_defaults_for_plain_true() -> None:
     """Despike = true uses despiking's project-wide defaults as-is."""
     process_settings = ProcessSettings(
         geolocation=_GEOLOCATION,
-        despiking=DespikeSettings(threshold=3.0, reference_window_length=5),
+        despiking=DespikeSettings(
+            fit_percentile=85.0, reference_window_length=5
+        ),
         channels={"practical_salinity": ChannelSettings(despike=True)},
     )
 
     resolved = resolve_despike_settings(process_settings)
 
     assert resolved["practical_salinity"] == DespikeSettings(
-        threshold=3.0, reference_window_length=5
+        fit_percentile=85.0, reference_window_length=5
     )
 
 
@@ -1138,19 +1192,42 @@ def test_resolve_despike_settings_merges_partial_override() -> None:
     """A partial per-channel override changes only the given fields."""
     process_settings = ProcessSettings(
         geolocation=_GEOLOCATION,
-        despiking=DespikeSettings(threshold=2.0, reference_window_length=5),
+        despiking=DespikeSettings(
+            fit_percentile=80.0, reference_window_length=5
+        ),
         channels={
             "practical_salinity": ChannelSettings(
                 despike=True,
-                despiking=DespikeChannelOverride(threshold=4.0),
+                despiking=DespikeChannelOverride(fit_percentile=95.0),
             )
         },
     )
 
     resolved = resolve_despike_settings(process_settings)
 
-    assert resolved["practical_salinity"].threshold == 4.0
+    assert resolved["practical_salinity"].fit_percentile == 95.0
     assert resolved["practical_salinity"].reference_window_length == 5
+
+
+def test_resolve_despike_settings_merges_rejection_method_override() -> None:
+    """A channel can override rejection_method/rejection_threshold alone."""
+    process_settings = ProcessSettings(
+        geolocation=_GEOLOCATION,
+        channels={
+            "temperature": ChannelSettings(
+                despike=True,
+                despiking=DespikeChannelOverride(
+                    rejection_method="absolute_threshold",
+                    rejection_threshold=0.05,
+                ),
+            )
+        },
+    )
+
+    resolved = resolve_despike_settings(process_settings)
+
+    assert resolved["temperature"].rejection_method == "absolute_threshold"
+    assert resolved["temperature"].rejection_threshold == 0.05
 
 
 def test_resolve_despike_settings_ignores_despiking_when_despike_false() -> (
@@ -1161,7 +1238,7 @@ def test_resolve_despike_settings_ignores_despiking_when_despike_false() -> (
         geolocation=_GEOLOCATION,
         channels={
             "practical_salinity": ChannelSettings(
-                despiking=DespikeChannelOverride(threshold=4.0)
+                despiking=DespikeChannelOverride(fit_percentile=95.0)
             )
         },
     )

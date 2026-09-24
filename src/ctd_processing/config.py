@@ -342,7 +342,8 @@ class GeolocationSettings(BaseModel):
 
     See `ctd_processing.process.geolocation.attach_geolocation`, applied to
     each profile's own extracted `Dataset` after it is sliced out of the
-    full deployment (see `ctd_processing.process.process_profile`).
+    full deployment (see
+    `ctd_processing.process.geolocation.attach_geolocation_to_profiles`).
     Every profile is given a `profile_start_time`/`profile_end_time` (its
     first/last `time` samples) and a `latitude`/`longitude` position,
     recorded in that profile's `Dataset.metadata`. This step is not
@@ -431,9 +432,10 @@ class DerivedVariablesSettings(BaseModel):
     """Settings for TEOS-10 derived variables computed via `gsw`.
 
     See `ctd_processing.process.derived_variables.compute_derived_variables`,
-    applied to each profile's `Dataset` after a position has been attached
-    to it (see `GeolocationSettings`) but before it is written out (see
-    `ctd_processing.process.process_profile`). Every quantity here is
+    applied to every profile's `Dataset` after a position has been attached
+    to each of them (see `GeolocationSettings`) but before they are written
+    out (see `ctd_processing.process.process_deployment`). Every quantity
+    here is
     derived from the profile's `electrical_conductivity`,
     `temperature`, and `sea_pressure` channels, plus its
     `latitude`/`longitude` position. Disabling a field only omits that
@@ -530,6 +532,11 @@ class DerivedVariablesSettings(BaseModel):
     oxygen_concentration: bool = False
 
 
+RejectionMethod = Literal[
+    "gpd_percentile", "raw_percentile", "absolute_threshold"
+]
+
+
 class DespikeChannelOverride(BaseModel):
     """One channel's override of the project-wide `DespikeSettings`.
 
@@ -543,31 +550,40 @@ class DespikeChannelOverride(BaseModel):
 
     Attributes
     ----------
-    threshold : float or None
-        Override of the project-wide `DespikeSettings.threshold` for
-        this channel. Optional; defaults to ``None``, meaning inherit.
     reference_window_length : int or None
         Override of the project-wide
         `DespikeSettings.reference_window_length` for this channel. Not
         validated here -- an even value only fails once merged and
         resolved (see `resolve_despike_settings`). Optional; defaults to
         ``None``, meaning inherit.
-    scale_window_length : int or None
-        Override of the project-wide `DespikeSettings.scale_window_length`
-        for this channel. Not validated here -- an even value only fails
-        once merged and resolved (see `resolve_despike_settings`).
-        Optional; defaults to ``None``, meaning inherit.
-    iterations : int or None
-        Override of the project-wide `DespikeSettings.iterations` for
+    fit_percentile : float or None
+        Override of the project-wide `DespikeSettings.fit_percentile` for
         this channel. Optional; defaults to ``None``, meaning inherit.
+    rejection_percentile : float or None
+        Override of the project-wide `DespikeSettings.rejection_percentile`
+        for this channel. Optional; defaults to ``None``, meaning inherit.
+    min_exceedances : int or None
+        Override of the project-wide `DespikeSettings.min_exceedances` for
+        this channel. Optional; defaults to ``None``, meaning inherit.
+    rejection_method : RejectionMethod or None
+        Override of the project-wide `DespikeSettings.rejection_method`
+        for this channel. Optional; defaults to ``None``, meaning inherit.
+    rejection_threshold : float or None
+        Override of the project-wide `DespikeSettings.rejection_threshold`
+        for this channel. Not validated here -- required-together with
+        `rejection_method` only once merged and resolved (see
+        `resolve_despike_settings`). Optional; defaults to ``None``,
+        meaning inherit.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    threshold: float | None = None
     reference_window_length: int | None = None
-    scale_window_length: int | None = None
-    iterations: int | None = None
+    fit_percentile: float | None = None
+    rejection_percentile: float | None = None
+    min_exceedances: int | None = None
+    rejection_method: RejectionMethod | None = None
+    rejection_threshold: float | None = None
 
 
 class DespikeSettings(BaseModel):
@@ -577,13 +593,10 @@ class DespikeSettings(BaseModel):
     `ctd_processing.config.resolve_despike_settings`. A channel is
     smoothed with a rolling median filter of `reference_window_length` to
     get a "reference" series; points whose residual against that
-    reference exceeds `threshold` times a MAD-based (median absolute
-    deviation) robust estimate of the residual's local spread -- computed
-    over the wider `scale_window_length` -- are replaced with NaN. This
-    can repeat, up to `iterations` times, stopping early the first pass
-    that finds no new spikes -- but because the MAD-based spread isn't
-    inflated by the spikes it's measuring (unlike a plain standard
-    deviation), a single pass is usually already enough.
+    reference exceeds a rejection threshold are replaced with NaN, in a
+    single detect-and-replace pass (no repeat/iterate option -- see
+    `rejection_method` for why). How that threshold is resolved is
+    controlled by `rejection_method`.
 
     These are project-wide defaults only; whether a given channel is
     despiked at all, and any per-channel overrides of these values, are
@@ -592,51 +605,108 @@ class DespikeSettings(BaseModel):
 
     Attributes
     ----------
-    threshold : float
-        Number of MAD-based spread units (of the residual against the
-        rolling median) a point must exceed to be flagged as a spike.
-        Defaults to ``3.0``, the standard "3xMAD" convention for Hampel
-        identifiers. This is a deliberate divergence from
-        `pyrsktools.RSK.despike`, which uses a plain standard deviation
-        with a default of ``2.0``.
     reference_window_length : int
         Width, in samples, of the rolling median filter used for the
-        "reference" series. Must be odd. Defaults to ``3``, matching
-        `pyrsktools.RSK.despike`'s own default -- small, so the reference
-        stays responsive to real structure in the data.
-    scale_window_length : int
-        Width, in samples, of the window the MAD-based spread estimate is
-        computed over. Must be odd. Defaults to ``11`` -- meaningfully
-        wider than `reference_window_length`, since a robust spread
-        estimate needs more samples to be statistically stable than the
-        reference needs to stay responsive.
-    iterations : int
-        Maximum number of detect-and-replace passes to run. Defaults to
-        ``1`` -- a pass that finds nothing new stops early regardless,
-        and because the MAD-based spread doesn't get inflated by the
-        spikes it's meant to catch, repeated passes are rarely needed;
-        this exists as an escape valve for unusual data.
+        "reference" series. Must be odd. Defaults to ``31`` -- a robust
+        reference needs on the order of 30 samples in its window before it
+        reliably rejects an isolated spike rather than being dragged by
+        it, wider than `pyrsktools.RSK.despike`'s own default of ``3``.
+    fit_percentile : float
+        Only used when `rejection_method` is ``"gpd_percentile"``.
+        Percentile of ``|residual|`` used as the peaks-over-threshold
+        fitting threshold ``u`` -- the point above which the tail is
+        assumed to follow a Generalized Pareto Distribution (GPD) closely
+        enough to fit, not the final rejection cutoff itself. Defaults to
+        ``90.0``; rarely needs changing.
+    rejection_percentile : float
+        The percentile of ``|residual|`` the resolved rejection threshold
+        corresponds to. Under `rejection_method` ``"gpd_percentile"``,
+        this is extrapolated from the fitted GPD tail beyond
+        `fit_percentile`; under ``"raw_percentile"``, it's a plain
+        empirical percentile of the data with no extrapolation. Unused
+        under ``"absolute_threshold"``. Defaults to ``99.9`` -- validated
+        (across 8+ real deployments, clustering consecutive flagged
+        samples into "events") to consistently land at a small,
+        single-digit count of genuine spike-like events per cast,
+        regardless of deployment size or tail heaviness.
+    min_exceedances : int
+        Only used when `rejection_method` is ``"gpd_percentile"``.
+        Minimum number of points exceeding the `fit_percentile` threshold
+        required to trust the GPD fit; below this, falls back to a plain
+        empirical `rejection_percentile` (no extrapolation) instead of
+        fitting shape/scale parameters on too few points. Defaults to
+        ``200``, a starting point rather than a rigorously tuned value.
+    rejection_method : RejectionMethod
+        How the rejection threshold is resolved. ``"gpd_percentile"``
+        (the default): fit a Generalized Pareto Distribution to
+        ``|residual|``'s tail via peaks-over-threshold (justified by the
+        Pickands-Balkema-de Haan theorem, which holds regardless of the
+        residual's actual distribution) and extrapolate to
+        `rejection_percentile`, falling back to a plain percentile per
+        `min_exceedances`. ``"raw_percentile"``: skip the GPD fit
+        entirely and use
+        ``numpy.percentile(abs(residual), rejection_percentile)``
+        directly, with no tail extrapolation. ``"absolute_threshold"``:
+        skip computing anything from the data and use
+        `rejection_threshold` verbatim, in the channel's own units. The
+        latter two exist for users manually tuning despiking who want to
+        avoid the cost/opacity of a GPD fit -- the GPD fit is meant to
+        provide a reliable default, not to be mandatory.
+    rejection_threshold : float or None
+        The rejection threshold to use verbatim when `rejection_method`
+        is ``"absolute_threshold"``. Required in that case; must be left
+        unset (``None``, the default) for every other `rejection_method`.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    threshold: float = 3.0
-    reference_window_length: int = 3
-    scale_window_length: int = 11
-    iterations: int = 1
+    reference_window_length: int = 31
+    fit_percentile: float = 90.0
+    rejection_percentile: float = 99.9
+    min_exceedances: int = 200
+    rejection_method: RejectionMethod = "gpd_percentile"
+    rejection_threshold: float | None = None
 
     @model_validator(mode="after")
-    def _validate_window_lengths(self) -> "DespikeSettings":
-        """Require odd `reference_window_length` and `scale_window_length`."""
+    def _validate_window_length(self) -> "DespikeSettings":
+        """Require an odd `reference_window_length`."""
         if self.reference_window_length % 2 == 0:
             raise ValueError(
                 "reference_window_length must be odd; got "
                 f"{self.reference_window_length}."
             )
-        if self.scale_window_length % 2 == 0:
+        return self
+
+    @model_validator(mode="after")
+    def _validate_percentiles(self) -> "DespikeSettings":
+        """Require `0 < fit_percentile < rejection_percentile < 100`."""
+        if not (0 < self.fit_percentile < self.rejection_percentile < 100):
             raise ValueError(
-                "scale_window_length must be odd; got "
-                f"{self.scale_window_length}."
+                "Require 0 < fit_percentile < rejection_percentile < 100; "
+                f"got fit_percentile={self.fit_percentile}, "
+                f"rejection_percentile={self.rejection_percentile}."
+            )
+        if self.min_exceedances <= 0:
+            raise ValueError(
+                f"min_exceedances must be positive; got {self.min_exceedances}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_rejection_threshold(self) -> "DespikeSettings":
+        """Require `rejection_threshold` iff `rejection_method` needs it."""
+        needs_threshold = self.rejection_method == "absolute_threshold"
+        has_threshold = self.rejection_threshold is not None
+        if needs_threshold and not has_threshold:
+            raise ValueError(
+                "rejection_threshold is required when rejection_method is "
+                "'absolute_threshold'."
+            )
+        if has_threshold and not needs_threshold:
+            raise ValueError(
+                "rejection_threshold must be left unset unless "
+                f"rejection_method is 'absolute_threshold'; got "
+                f"rejection_method={self.rejection_method!r}."
             )
         return self
 

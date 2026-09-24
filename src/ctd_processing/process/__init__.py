@@ -19,9 +19,6 @@ from pathlib import Path
 import xarray as xr
 
 from ctd_processing.config import (
-    DerivedVariablesSettings,
-    DespikeSettings,
-    GeolocationSettings,
     Settings,
     resolve_despike_settings,
     resolve_process_settings,
@@ -29,9 +26,8 @@ from ctd_processing.config import (
 from ctd_processing.logging_utils import log_verbose
 from ctd_processing.process.build import build_dataset
 from ctd_processing.process.ct_lag import process_ct_lag
-from ctd_processing.process.dataset import Dataset
 from ctd_processing.process.derived_variables import compute_derived_variables
-from ctd_processing.process.geolocation import attach_geolocation
+from ctd_processing.process.geolocation import attach_geolocation_to_profiles
 from ctd_processing.process.profiles import find_profiles, resolve_cast_slices
 from ctd_processing.process.raw_channels import process_raw_channels
 from ctd_processing.process.read import read_rsk
@@ -40,48 +36,7 @@ from ctd_processing.process.sea_pressure import compute_sea_pressure
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["process_deployment", "process_deployment_files", "process_profile"]
-
-
-def process_profile(
-    dataset: Dataset,
-    geolocation: GeolocationSettings,
-    external_dataset: xr.Dataset | None,
-    derived_variables: DerivedVariablesSettings,
-    despike: dict[str, DespikeSettings] | None = None,
-) -> Dataset:
-    """Attach a position and compute derived variables for one profile.
-
-    Attaches `dataset`'s canonical time and position via
-    `ctd_processing.process.geolocation.attach_geolocation`, then computes
-    and attaches TEOS-10 derived variables via
-    `ctd_processing.process.derived_variables.compute_derived_variables` --
-    which needs the position `attach_geolocation` just attached, so the two
-    must run in this order.
-
-    Parameters
-    ----------
-    dataset : Dataset
-        One profile's `Dataset`, already extracted from the full
-        deployment via `Dataset.subset`. Mutated in place.
-    geolocation : GeolocationSettings
-        Forwarded to `attach_geolocation`.
-    external_dataset : xarray.Dataset or None
-        Forwarded to `attach_geolocation`.
-    derived_variables : DerivedVariablesSettings
-        Forwarded to `compute_derived_variables`.
-    despike : dict[str, DespikeSettings] or None, optional
-        Forwarded to `compute_derived_variables`. Optional; defaults to
-        ``None``, meaning no derived quantity is despiked.
-
-    Returns
-    -------
-    Dataset
-        `dataset` itself (not a copy).
-    """
-    dataset = attach_geolocation(dataset, geolocation, external_dataset)
-    dataset = compute_derived_variables(dataset, derived_variables, despike)
-    return dataset
+__all__ = ["process_deployment", "process_deployment_files"]
 
 
 def process_deployment(
@@ -117,20 +72,27 @@ def process_deployment(
     configured (`ct_lag`), a deployment-wide conductivity/temperature lag
     correction is then calculated and applied using only those resolved
     spans -- the same data that ends up in the output, not the full,
-    unresolved cycles. Finally, this loops over every resolved cast: each
-    is extracted from the full-deployment `Dataset` (`Dataset.subset`),
-    passed through :func:`process_profile` (attaching a position,
-    computing TEOS-10 derived variables, and despiking configured ones),
-    and written into a per-deployment subdirectory of `profiles_directory`
-    in `process_settings.profile_format` (see
+    unresolved cycles. Finally, every resolved cast is extracted from the
+    full-deployment `Dataset` (`Dataset.subset`) into its own profile
+    `Dataset`, all of them attached with a position via
+    :func:`ctd_processing.process.geolocation.attach_geolocation_to_profiles`,
+    then passed *together* through
+    :func:`ctd_processing.process.derived_variables.compute_derived_variables`,
+    which computes and despikes TEOS-10 derived variables one quantity at a
+    time across every profile in the deployment -- despiking pools its
+    rejection-threshold fit across every cast, so it needs every profile's
+    value for one quantity at once, not one profile fully processed before
+    the next starts. Each processed profile is then written into a
+    per-deployment subdirectory of `profiles_directory` in
+    `process_settings.profile_format` (see
     :func:`ctd_processing.process.save.save_profile`). With
     `profiles.direction` set to ``"both"``, one identified cycle yields
     two separate profiles (downcast and upcast), so the number of
     profiles written can exceed the number of cycles logged as
     "Identified". If
     `process_settings.geolocation.external_dataset_path` is set, that
-    dataset is opened once for the whole loop and reused across every
-    profile, rather than once per profile.
+    dataset is opened once for the whole deployment and reused across
+    every profile, rather than once per profile.
     Once the `Dataset` is built, the underlying `pyrsktools.RSK` object
     is no longer referenced and is free to be garbage collected -- every
     later step operates purely on the `Dataset`.
@@ -184,20 +146,23 @@ def process_deployment(
         external_dataset = xr.open_dataset(geolocation.external_dataset_path)
     profile_paths = []
     try:
+        profile_datasets = []
         for index, cast_slice in enumerate(cast_slices):
             description = (
                 f"extracted profile {index + 1} of {total} "
                 f"(samples {cast_slice.start}:{cast_slice.stop})"
             )
-            profile_dataset = dataset.subset(cast_slice, description)
+            profile_datasets.append(dataset.subset(cast_slice, description))
             log_verbose(logger, description)
-            profile_dataset = process_profile(
-                profile_dataset,
-                geolocation,
-                external_dataset,
-                process_settings.derived_variables,
-                despike,
-            )
+
+        profile_datasets = attach_geolocation_to_profiles(
+            profile_datasets, geolocation, external_dataset
+        )
+        profile_datasets = compute_derived_variables(
+            profile_datasets, process_settings.derived_variables, despike
+        )
+
+        for index, profile_dataset in enumerate(profile_datasets):
             path = save_profile(
                 dataset,
                 profile_dataset,

@@ -43,10 +43,10 @@ _NONE_SETTINGS = DerivedVariablesSettings(
 )
 
 
-def _dataset(
+def _profile(
     n: int = 5, latitude: float | None = 45.0, longitude: float | None = -125.0
 ) -> Dataset:
-    """Build a Dataset with the channels/metadata this module's step needs."""
+    """Build a profile Dataset with the channels/metadata this module needs."""
     dataset = Dataset(time=Channel(data=np.arange(float(n))))
     dataset.add_channel(
         "electrical_conductivity", Channel(data=np.full(n, 35.0))
@@ -90,11 +90,11 @@ def test_compute_derived_variables_adds_core_five_by_default(
 ) -> None:
     """The default settings add z, practical/absolute salinity, CT, sigma0."""
     _stub_gsw(monkeypatch)
-    dataset = _dataset()
+    profiles = [_profile()]
 
-    result = compute_derived_variables(dataset, DerivedVariablesSettings())
+    result = compute_derived_variables(profiles, DerivedVariablesSettings())
 
-    assert result is dataset
+    assert result is profiles
     for key in (
         "z",
         "practical_salinity",
@@ -102,7 +102,7 @@ def test_compute_derived_variables_adds_core_five_by_default(
         "conservative_temperature",
         "density_anomaly",
     ):
-        assert key in result.channels
+        assert key in result[0].channels
     for key in (
         "potential_temperature",
         "speed_of_sound",
@@ -113,7 +113,7 @@ def test_compute_derived_variables_adds_core_five_by_default(
         "haline_contraction_coefficient",
         "oxygen_concentration_from_saturation",
     ):
-        assert key not in result.channels
+        assert key not in result[0].channels
 
 
 @pytest.mark.parametrize(
@@ -144,14 +144,14 @@ def test_compute_derived_variables_flag_gates_its_channel(
     just not added as their own channels unless separately enabled.
     """
     _stub_gsw(monkeypatch)
-    dataset = _dataset()
+    profiles = [_profile()]
     settings = _NONE_SETTINGS.model_copy(update={flag: True})
 
-    result = compute_derived_variables(dataset, settings)
+    result = compute_derived_variables(profiles, settings)
 
-    assert key in result.channels
+    assert key in result[0].channels
     other_keys = set(_DERIVED_KEYS) - {key}
-    assert not other_keys & set(result.channels)
+    assert not other_keys & set(result[0].channels)
 
 
 def test_compute_derived_variables_overwrites_existing_channel(
@@ -159,20 +159,20 @@ def test_compute_derived_variables_overwrites_existing_channel(
 ) -> None:
     """An existing channel under a derived-variable key is overwritten."""
     _stub_gsw(monkeypatch)
-    dataset = _dataset(n=5)
-    dataset.add_channel(
+    profiles = [_profile(n=5)]
+    profiles[0].add_channel(
         "practical_salinity",
         Channel(data=np.zeros(5), metadata={"source": "onboard"}),
     )
 
-    result = compute_derived_variables(dataset, DerivedVariablesSettings())
+    result = compute_derived_variables(profiles, DerivedVariablesSettings())
 
-    salinity = result.channels["practical_salinity"]
+    salinity = result[0].channels["practical_salinity"]
     assert "source" not in salinity.metadata
     assert salinity.metadata["standard_name"] == "sea_water_practical_salinity"
     expected = (
-        result.channels["electrical_conductivity"].data
-        - result.channels["temperature"].data
+        result[0].channels["electrical_conductivity"].data
+        - result[0].channels["temperature"].data
     )
     np.testing.assert_array_equal(salinity.data, expected)
 
@@ -189,19 +189,19 @@ def test_compute_derived_variables_missing_channel_raises(
     missing_channel: str,
 ) -> None:
     """A missing required channel raises ValueError naming it."""
-    dataset = _dataset()
-    dataset.remove_channel(missing_channel)
+    profiles = [_profile()]
+    profiles[0].remove_channel(missing_channel)
 
     with pytest.raises(ValueError, match=missing_channel):
-        compute_derived_variables(dataset, DerivedVariablesSettings())
+        compute_derived_variables(profiles, DerivedVariablesSettings())
 
 
 def test_compute_derived_variables_missing_position_raises() -> None:
-    """No latitude/longitude in dataset.metadata raises ValueError."""
-    dataset = _dataset(latitude=None, longitude=None)
+    """No latitude/longitude in a profile's metadata raises ValueError."""
+    profiles = [_profile(latitude=None, longitude=None)]
 
     with pytest.raises(ValueError, match="latitude/longitude"):
-        compute_derived_variables(dataset, DerivedVariablesSettings())
+        compute_derived_variables(profiles, DerivedVariablesSettings())
 
 
 def test_compute_derived_variables_oxygen_concentration_requires_saturation(
@@ -214,11 +214,11 @@ def test_compute_derived_variables_oxygen_concentration_requires_saturation(
     skip.
     """
     _stub_gsw(monkeypatch)
-    dataset = _dataset()
+    profiles = [_profile()]
     settings = _NONE_SETTINGS.model_copy(update={"oxygen_concentration": True})
 
     with pytest.raises(ValueError, match="dissolved_oxygen_saturation"):
-        compute_derived_variables(dataset, settings)
+        compute_derived_variables(profiles, settings)
 
 
 def test_compute_derived_variables_oxygen_concentration_from_saturation(
@@ -226,29 +226,33 @@ def test_compute_derived_variables_oxygen_concentration_from_saturation(
 ) -> None:
     """oxygen_concentration derives concentration from saturation and O2sol."""
     _stub_gsw(monkeypatch)
-    dataset = _dataset(n=5)
+    profiles = [_profile(n=5)]
     saturation = np.full(5, 50.0)
-    dataset.add_channel(
+    profiles[0].add_channel(
         "dissolved_oxygen_saturation", Channel(data=saturation.copy())
     )
     settings = _NONE_SETTINGS.model_copy(update={"oxygen_concentration": True})
 
-    result = compute_derived_variables(dataset, settings)
+    result = compute_derived_variables(profiles, settings)
 
-    oxygen = result.channels["oxygen_concentration_from_saturation"]
+    oxygen = result[0].channels["oxygen_concentration_from_saturation"]
     assert (
         oxygen.metadata["standard_name"]
         == "mole_concentration_of_dissolved_molecular_oxygen_in_sea_water"
     )
     sa = (
-        result.channels["electrical_conductivity"].data
-        - result.channels["temperature"].data
+        result[0].channels["electrical_conductivity"].data
+        - result[0].channels["temperature"].data
         + 1.0
     )
-    ct = result.channels["temperature"].data + 1.0
-    p = result.channels["sea_pressure"].data
+    ct = result[0].channels["temperature"].data + 1.0
+    p = result[0].channels["sea_pressure"].data
     solubility = (
-        sa + ct + p + result.metadata["longitude"] + result.metadata["latitude"]
+        sa
+        + ct
+        + p
+        + result[0].metadata["longitude"]
+        + result[0].metadata["latitude"]
     )
     expected = solubility * (saturation / 100.0)
     np.testing.assert_allclose(oxygen.data, expected)
@@ -260,32 +264,36 @@ def test_compute_derived_variables_despikes_before_deriving_downstream(
     """A despiked practical_salinity doesn't leak its spike downstream.
 
     A conductivity outlier spikes practical_salinity (SP = c - t); with
-    despike configured for practical_salinity, that spike is replaced
-    with NaN *before* absolute_salinity is derived from it, so the NaN
-    -- not the raw outlier -- propagates into absolute_salinity too.
-
-    The non-spiked conductivity samples carry slight distinct offsets
-    (rather than all being exactly 35.0) so their residuals against the
-    rolling median aren't exact ties -- real sensor noise never ties bit
-    for bit, and an exact tie would collapse the MAD-based scale to 0.
+    despike configured for practical_salinity, that spike is replaced with
+    NaN *before* absolute_salinity is derived from it, so the NaN -- not
+    the raw outlier -- propagates into absolute_salinity too. Uses
+    `rejection_method="absolute_threshold"` for a deterministic threshold,
+    since a single 5-sample profile is far too small for the default GPD
+    fit to do anything but fall back to a plain percentile.
     """
     _stub_gsw(monkeypatch)
-    dataset = _dataset(n=5)
-    dataset.channels["electrical_conductivity"].data[:] = [
+    profiles = [_profile(n=5)]
+    profiles[0].channels["electrical_conductivity"].data[:] = [
         35.0,
         35.02,
         350.0,
         34.99,
         35.01,
     ]
-    despike = {"practical_salinity": DespikeSettings()}
+    despike = {
+        "practical_salinity": DespikeSettings(
+            reference_window_length=3,
+            rejection_method="absolute_threshold",
+            rejection_threshold=10.0,
+        )
+    }
 
     result = compute_derived_variables(
-        dataset, DerivedVariablesSettings(), despike
+        profiles, DerivedVariablesSettings(), despike
     )
 
-    assert np.isnan(result.channels["practical_salinity"].data[2])
-    assert np.isnan(result.channels["absolute_salinity"].data[2])
+    assert np.isnan(result[0].channels["practical_salinity"].data[2])
+    assert np.isnan(result[0].channels["absolute_salinity"].data[2])
 
 
 def test_compute_derived_variables_without_despike_spike_propagates(
@@ -298,13 +306,55 @@ def test_compute_derived_variables_without_despike_spike_propagates(
     something.
     """
     _stub_gsw(monkeypatch)
-    dataset = _dataset(n=5)
-    dataset.channels["electrical_conductivity"].data[2] = 350.0
+    profiles = [_profile(n=5)]
+    profiles[0].channels["electrical_conductivity"].data[2] = 350.0
 
-    result = compute_derived_variables(dataset, DerivedVariablesSettings())
+    result = compute_derived_variables(profiles, DerivedVariablesSettings())
 
-    assert result.channels["practical_salinity"].data[2] == 340.0
-    assert result.channels["absolute_salinity"].data[2] == 341.0
+    assert result[0].channels["practical_salinity"].data[2] == 340.0
+    assert result[0].channels["absolute_salinity"].data[2] == 341.0
+
+
+def test_compute_derived_variables_despike_pools_across_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One rejection threshold is shared across profiles; counts are not.
+
+    Only the first profile has a spike. Both profiles are despiked under
+    the same (pooled) threshold, but only the first one's own count is
+    nonzero, and only it gets a history entry -- `_maybe_despike_profiles`
+    records conditionally on each profile's *own* replaced count.
+    """
+    _stub_gsw(monkeypatch)
+    profiles = [_profile(n=5), _profile(n=5)]
+    profiles[0].channels["electrical_conductivity"].data[:] = [
+        35.0,
+        35.02,
+        350.0,
+        34.99,
+        35.01,
+    ]
+    despike = {
+        "practical_salinity": DespikeSettings(
+            reference_window_length=3,
+            rejection_method="absolute_threshold",
+            rejection_threshold=10.0,
+        )
+    }
+
+    result = compute_derived_variables(
+        profiles, DerivedVariablesSettings(), despike
+    )
+
+    assert np.isnan(result[0].channels["practical_salinity"].data[2])
+    assert not np.isnan(result[1].channels["practical_salinity"].data).any()
+    assert any(
+        "despiked practical_salinity: 1 point(s)" in entry
+        for entry in result[0].history
+    )
+    assert not any(
+        "despiked practical_salinity" in entry for entry in result[1].history
+    )
 
 
 def test_compute_derived_variables_logs_zero_count_when_nothing_despiked(
@@ -312,32 +362,37 @@ def test_compute_derived_variables_logs_zero_count_when_nothing_despiked(
 ) -> None:
     """A 0-count VERBOSE record is logged even when nothing was despiked."""
     _stub_gsw(monkeypatch)
-    dataset = _dataset(n=5)
+    profiles = [_profile(n=5)]
     despike = {
         "practical_salinity": DespikeSettings(
-            threshold=2.0, reference_window_length=3
+            reference_window_length=3,
+            rejection_method="absolute_threshold",
+            rejection_threshold=1000.0,
         )
     }
     caplog.set_level(VERBOSE, logger="ctd_processing.process.derived_variables")
 
-    compute_derived_variables(dataset, DerivedVariablesSettings(), despike)
+    compute_derived_variables(profiles, DerivedVariablesSettings(), despike)
 
     messages = [record.getMessage() for record in caplog.records]
-    assert "despiked practical_salinity: 0 point(s)" in messages
+    assert any(
+        m.startswith("despiked practical_salinity: 0 point(s)")
+        for m in messages
+    )
 
 
 def test_compute_derived_variables_records_history_with_added_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """dataset.history gains one entry naming which variables were added."""
+    """Each profile's history gains one entry naming the variables added."""
     _stub_gsw(monkeypatch)
-    dataset = _dataset()
+    profiles = [_profile()]
 
-    compute_derived_variables(dataset, DerivedVariablesSettings())
+    compute_derived_variables(profiles, DerivedVariablesSettings())
 
     assert any(
         "computed derived variables" in entry and "z" in entry
-        for entry in dataset.history
+        for entry in profiles[0].history
     )
 
 
@@ -346,12 +401,12 @@ def test_compute_derived_variables_records_nothing_when_all_disabled(
 ) -> None:
     """No history entry is added when every flag is disabled."""
     _stub_gsw(monkeypatch)
-    dataset = _dataset()
-    history_before = list(dataset.history)
+    profiles = [_profile()]
+    history_before = list(profiles[0].history)
 
-    compute_derived_variables(dataset, _NONE_SETTINGS)
+    compute_derived_variables(profiles, _NONE_SETTINGS)
 
-    assert dataset.history == history_before
+    assert profiles[0].history == history_before
 
 
 def test_compute_derived_variables_logs_verbose_on_add(
@@ -360,9 +415,9 @@ def test_compute_derived_variables_logs_verbose_on_add(
     """Adding a channel logs at VERBOSE."""
     _stub_gsw(monkeypatch)
     caplog.set_level(VERBOSE, logger="ctd_processing.process.derived_variables")
-    dataset = _dataset()
+    profiles = [_profile()]
 
-    compute_derived_variables(dataset, DerivedVariablesSettings())
+    compute_derived_variables(profiles, DerivedVariablesSettings())
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("added channel 'z'" in m for m in messages)

@@ -6,9 +6,12 @@ writes one already-extracted, already-processed profile `Dataset` out via
 `ctd_processing.process.save_parquet.write_parquet`, into a per-deployment
 subdirectory of the given profiles directory. `load_profile` reverses that:
 it reads a single saved profile file back into a `Dataset`. Extracting a
-profile out of a full deployment `Dataset` (`Dataset.subset`) and processing
-it (see `ctd_processing.process.process_profile`) both happen before
-`save_profile` is called -- see `ctd_processing.process.process_deployment`.
+profile out of a full deployment `Dataset` (`Dataset.subset`), geolocating
+it, and computing its derived variables (see
+`ctd_processing.process.geolocation.attach_geolocation_to_profiles` and
+`ctd_processing.process.derived_variables.compute_derived_variables`) all
+happen before `save_profile` is called -- see
+`ctd_processing.process.process_deployment`.
 """
 
 import logging
@@ -59,8 +62,8 @@ def save_profile(
 
     Purely responsible for naming and writing `profile_dataset` -- by the
     time this is called, `profile_dataset` has already been extracted from
-    the full deployment `Dataset` (`Dataset.subset`) and processed (see
-    `ctd_processing.process.process_profile`), typically by
+    the full deployment `Dataset` (`Dataset.subset`) and processed
+    (geolocated and had its derived variables computed), typically by
     `ctd_processing.process.process_deployment`. Written into a
     subdirectory of `directory` named after the deployment's ``.rsk`` stem
     (see `profile_filename`), so every profile from one deployment lands
